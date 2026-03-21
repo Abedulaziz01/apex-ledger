@@ -34,8 +34,3 @@ Using uv (recommended):
 uv venv
 source .venv/bin/activate # Linux / macOS
 .venv\Scripts\activate # Windows
-Or using venv:
-python -m venv .venv
-source .venv/bin/activate
-python -m venv .venv
-source .venv/bin/activate
