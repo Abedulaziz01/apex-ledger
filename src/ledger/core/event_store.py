@@ -3,6 +3,7 @@ import asyncpg
 from typing import Optional
 from src.ledger.core.models import BaseEvent, StoredEvent, StreamMetadata
 from src.ledger.core.exceptions import OptimisticConcurrencyError
+from src.ledger.upcasting.registry import registry as upcaster_registry
 
 
 class EventStore:
@@ -80,18 +81,23 @@ class EventStore:
                 stream_id,
                 from_version,
             )
-        return [
-            StoredEvent(
+        result = []
+        for r in rows:
+            version = r.get("version", 1) if isinstance(r, dict) else 1
+            raw_data = json.loads(r["event_data"]) if isinstance(r["event_data"], str) else dict(r["event_data"])
+            final_version, upcasted_data = upcaster_registry.upcast(
+                r["event_type"], version, raw_data
+            )
+            result.append(StoredEvent(
                 id=r["id"],
                 stream_id=r["stream_id"],
                 version=r["version"],
                 event_type=r["event_type"],
-                event_data=json.loads(r["event_data"]),
-                metadata=json.loads(r["metadata"]),
+                event_data=upcasted_data,
+                metadata=json.loads(r["metadata"]) if isinstance(r["metadata"], str) else dict(r["metadata"]),
                 created_at=r["created_at"],
-            )
-            for r in rows
-        ]
+            ))
+        return result
 
     async def load_all(
         self,
@@ -111,18 +117,23 @@ class EventStore:
                 after_event_id,
                 limit,
             )
-        return [
-            StoredEvent(
+        result = []
+        for r in rows:
+            version = r.get("version", 1) if isinstance(r, dict) else 1
+            raw_data = json.loads(r["event_data"]) if isinstance(r["event_data"], str) else dict(r["event_data"])
+            final_version, upcasted_data = upcaster_registry.upcast(
+                r["event_type"], version, raw_data
+            )
+            result.append(StoredEvent(
                 id=r["id"],
                 stream_id=r["stream_id"],
                 version=r["version"],
                 event_type=r["event_type"],
-                event_data=json.loads(r["event_data"]),
-                metadata=json.loads(r["metadata"]),
+                event_data=upcasted_data,
+                metadata=json.loads(r["metadata"]) if isinstance(r["metadata"], str) else dict(r["metadata"]),
                 created_at=r["created_at"],
-            )
-            for r in rows
-        ]
+            ))
+        return result
 
     async def stream_version(self, stream_id: str) -> int:
         """Return current version of a stream, 0 if it doesn't exist."""
