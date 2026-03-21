@@ -1,6 +1,6 @@
+import json
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
-from src.ledger.core.exceptions import OptimisticConcurrencyError
 from src.ledger.domain.events import (
     ApplicationSubmitted,
     CreditAnalysisRequested,
@@ -24,9 +24,7 @@ VALID_TRANSITIONS = {
     None: "Submitted",
     "Submitted": "AwaitingAnalysis",
     "AwaitingAnalysis": "AnalysisComplete",
-    "AnalysisComplete": "ComplianceReview",
-    "ComplianceReview": "PendingDecision",
-    "PendingDecision": ["ApprovedPendingHuman", "DeclinedPendingHuman"],
+    "AnalysisComplete": ["ApprovedPendingHuman", "DeclinedPendingHuman"],
     "ApprovedPendingHuman": "FinalApproved",
     "DeclinedPendingHuman": "FinalDeclined",
 }
@@ -42,7 +40,7 @@ class LoanApplicationAggregate:
         self.recommended_limit_usd: Optional[float] = None
         self.contributing_sessions: list = []
 
-    # ── state machine guard ──────────────────────────────────────────────────
+    # ── rule 1: state machine ─────────────────────────────────────────────
 
     def _transition(self, new_status: str) -> None:
         allowed = VALID_TRANSITIONS.get(self.status)
@@ -56,7 +54,7 @@ class LoanApplicationAggregate:
                 raise DomainError(f"Cannot transition from '{self.status}' to '{new_status}'")
         self.status = new_status
 
-    # ── assertions ───────────────────────────────────────────────────────────
+    # ── assertions ────────────────────────────────────────────────────────
 
     def assert_awaiting_analysis(self) -> None:
         if self.status != "AwaitingAnalysis":
@@ -66,10 +64,12 @@ class LoanApplicationAggregate:
         if self.status != "AnalysisComplete":
             raise DomainError(f"Expected AnalysisComplete, got '{self.status}'")
 
+    # rule 3: model version locking
     def assert_no_credit_analysis(self) -> None:
         if self.credit_analysis_done:
-            raise DomainError("CreditAnalysis already completed for this application")
+            raise DomainError("CreditAnalysis already completed — model version locked")
 
+    # rule 5: compliance dependency
     def assert_compliance_cleared(self) -> None:
         if not self.compliance_cleared:
             raise DomainError("Cannot approve: compliance not yet cleared")
@@ -78,7 +78,22 @@ class LoanApplicationAggregate:
         if self.status != "PendingDecision":
             raise DomainError(f"Expected PendingDecision, got '{self.status}'")
 
-    # ── apply methods ────────────────────────────────────────────────────────
+    # rule 4: confidence floor
+    @staticmethod
+    def enforce_confidence_floor(confidence_score: float, recommendation: str) -> str:
+        if confidence_score < 0.6 and recommendation != "REFER":
+            return "REFER"
+        return recommendation
+
+    # rule 6: causal chain
+    def assert_causal_chain(self, contributing_sessions: list, sessions_that_processed: set) -> None:
+        invalid = set(contributing_sessions) - sessions_that_processed
+        if invalid:
+            raise DomainError(
+                f"Orchestrator references sessions that never processed this application: {invalid}"
+            )
+
+    # ── apply methods ─────────────────────────────────────────────────────
 
     def _on_application_submitted(self, event: ApplicationSubmitted) -> None:
         self.application_id = event.application_id
@@ -93,17 +108,19 @@ class LoanApplicationAggregate:
         self._transition("AnalysisComplete")
 
     def _on_fraud_screening_completed(self, event: FraudScreeningCompleted) -> None:
-        pass  # no state transition; fraud score stored externally
+        pass
 
     def _on_decision_generated(self, event: DecisionGenerated) -> None:
         self.contributing_sessions = event.contributing_agent_sessions
         if event.recommendation == "APPROVE":
             self._transition("ApprovedPendingHuman")
-        else:
+        elif event.recommendation == "DECLINE":
             self._transition("DeclinedPendingHuman")
+        else:
+            self._transition("DeclinedPendingHuman")  # REFER goes to declined pending human
 
     def _on_human_review_completed(self, event: HumanReviewCompleted) -> None:
-        pass  # final decision captured in approved/declined events
+        pass
 
     def _on_application_approved(self, event: ApplicationApproved) -> None:
         self._transition("FinalApproved")
@@ -111,39 +128,37 @@ class LoanApplicationAggregate:
     def _on_application_declined(self, event: ApplicationDeclined) -> None:
         self._transition("FinalDeclined")
 
-    # ── dispatcher ───────────────────────────────────────────────────────────
+    # ── dispatcher ────────────────────────────────────────────────────────
 
     def _apply(self, event) -> None:
         dispatch = {
-            "ApplicationSubmitted":      self._on_application_submitted,
-            "CreditAnalysisRequested":   self._on_credit_analysis_requested,
-            "CreditAnalysisCompleted":   self._on_credit_analysis_completed,
-            "FraudScreeningCompleted":   self._on_fraud_screening_completed,
-            "DecisionGenerated":         self._on_decision_generated,
-            "HumanReviewCompleted":      self._on_human_review_completed,
-            "ApplicationApproved":       self._on_application_approved,
-            "ApplicationDeclined":       self._on_application_declined,
+            "ApplicationSubmitted":    self._on_application_submitted,
+            "CreditAnalysisRequested": self._on_credit_analysis_requested,
+            "CreditAnalysisCompleted": self._on_credit_analysis_completed,
+            "FraudScreeningCompleted": self._on_fraud_screening_completed,
+            "DecisionGenerated":       self._on_decision_generated,
+            "HumanReviewCompleted":    self._on_human_review_completed,
+            "ApplicationApproved":     self._on_application_approved,
+            "ApplicationDeclined":     self._on_application_declined,
         }
         handler = dispatch.get(event.event_type)
         if handler:
             handler(event)
         self.version += 1
 
-    # ── loader ───────────────────────────────────────────────────────────────
+    # ── loader ────────────────────────────────────────────────────────────
 
     @classmethod
     async def load(cls, store: "EventStore", application_id: str) -> "LoanApplicationAggregate":
         agg = cls()
         events = await store.load_stream(f"loan-{application_id}")
         for stored in events:
-            # reconstruct domain event from stored event_type + event_data
             evt = _reconstruct(stored)
             agg._apply(evt)
         return agg
 
 
 def _reconstruct(stored) -> object:
-    """Turn a StoredEvent back into a domain event dataclass."""
     from src.ledger.domain.events import (
         ApplicationSubmitted, CreditAnalysisRequested, CreditAnalysisCompleted,
         FraudScreeningCompleted, DecisionGenerated, HumanReviewCompleted,
@@ -161,7 +176,6 @@ def _reconstruct(stored) -> object:
     }
     cls = mapping.get(stored.event_type)
     if cls is None:
-        # unknown event — return a stub with just event_type
         class Unknown:
             event_type = stored.event_type
         return Unknown()
