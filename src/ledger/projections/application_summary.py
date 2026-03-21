@@ -1,9 +1,9 @@
 import asyncpg
+from datetime import datetime, timezone
 from typing import Optional
 
 
 class ApplicationSummaryProjection:
-    """Handles application_summary table — one row per loan application."""
 
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
@@ -20,6 +20,29 @@ class ApplicationSummaryProjection:
         }.get(event_type)
         if handler:
             await handler(event_data, recorded_at)
+
+    async def get_lag(self) -> float:
+        """
+        Milliseconds between the latest unprocessed event's created_at and now.
+        Returns 0.0 if projection is fully caught up.
+        """
+        async with self._pool.acquire() as conn:
+            checkpoint = await conn.fetchrow(
+                "SELECT last_event_id FROM projection_checkpoints WHERE projection_name='main_daemon'"
+            )
+            last_id = checkpoint["last_event_id"] if checkpoint else 0
+            row = await conn.fetchrow(
+                "SELECT created_at FROM events WHERE id > $1 ORDER BY id ASC LIMIT 1",
+                last_id,
+            )
+        if not row:
+            return 0.0
+        now = datetime.now(timezone.utc)
+        event_ts = row["created_at"]
+        if event_ts.tzinfo is None:
+            event_ts = event_ts.replace(tzinfo=timezone.utc)
+        lag_ms = (now - event_ts).total_seconds() * 1000
+        return max(0.0, lag_ms)
 
     async def _on_submitted(self, d: dict, ts) -> None:
         async with self._pool.acquire() as conn:
