@@ -23,3 +23,19 @@ python --version
 psql --version
 git --version
 ```
+
+2. Project Setup
+   2.1 Clone Repository
+   git clone <https://github.com/Abedulaziz01/apex-ledger.git>
+   cd <apex-ledger>
+   2.2 Create Virtual Environment
+
+Using uv (recommended):
+uv venv
+source .venv/bin/activate # Linux / macOS
+.venv\Scripts\activate # Windows
+Or using venv:
+python -m venv .venv
+source .venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate
