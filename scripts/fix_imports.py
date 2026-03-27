@@ -3,6 +3,7 @@ import pathlib
 files = [
     'src/ledger/agents/base_agent.py',
     'src/ledger/agents/stub_agents.py',
+    'src/ledger/agents/credit_analysis_agent.py',
     'src/ledger/schema/events.py',
 ]
 
