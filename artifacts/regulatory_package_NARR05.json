@@ -1,0 +1,96 @@
+{
+  "narrative": "NARR-05",
+  "description": "Human override: officer approves AI-declined application",
+  "application_id": "NARR05-1774610070",
+  "run_at": "2026-03-27T11:14:30.190393+00:00",
+  "elapsed_seconds": 0.18,
+  "events": [
+    {
+      "version": 1,
+      "event_type": "ApplicationSubmitted",
+      "event_data": {
+        "applicant_id": "cust-narr05",
+        "loan_purpose": "acquisition",
+        "submitted_at": "2026-03-27T11:14:30.103502+00:00",
+        "application_id": "NARR05-1774610070",
+        "submission_channel": "branch",
+        "requested_amount_usd": 95000
+      },
+      "created_at": "2026-03-27T11:12:04.515005+00:00"
+    },
+    {
+      "version": 2,
+      "event_type": "CreditAnalysisCompleted",
+      "event_data": {
+        "agent_id": "credit-narr05",
+        "risk_tier": "HIGH",
+        "session_id": "sess-narr05",
+        "model_version": "gpt-4",
+        "application_id": "NARR05-1774610070",
+        "input_data_hash": "hash-narr05-credit",
+        "confidence_score": 0.62,
+        "analysis_duration_ms": 1100,
+        "recommended_limit_usd": 50000
+      },
+      "created_at": "2026-03-27T11:12:04.530002+00:00"
+    },
+    {
+      "version": 3,
+      "event_type": "DecisionGenerated",
+      "event_data": {
+        "application_id": "NARR05-1774610070",
+        "model_versions": {
+          "credit": "gpt-4"
+        },
+        "recommendation": "DECLINE",
+        "confidence_score": 0.62,
+        "orchestrator_agent_id": "orch-narr05",
+        "decision_basis_summary": "high risk tier, limit below requested",
+        "contributing_agent_sessions": [
+          "agent-credit-narr05-sess-narr05"
+        ]
+      },
+      "created_at": "2026-03-27T11:12:04.537281+00:00"
+    },
+    {
+      "version": 4,
+      "event_type": "HumanReviewCompleted",
+      "event_data": {
+        "override": true,
+        "reviewer_id": "officer-smith",
+        "application_id": "NARR05-1774610070",
+        "final_decision": "APPROVE",
+        "override_reason": "Long-standing client, collateral verified offline"
+      },
+      "created_at": "2026-03-27T11:12:04.543527+00:00"
+    },
+    {
+      "version": 5,
+      "event_type": "ApplicationApproved",
+      "event_data": {
+        "conditions": [
+          "collateral_deed_required"
+        ],
+        "approved_by": "officer-smith",
+        "interest_rate": 0.067,
+        "application_id": "NARR05-1774610070",
+        "effective_date": "2026-02-01",
+        "approved_amount_usd": 95000
+      },
+      "created_at": "2026-03-27T11:12:04.549946+00:00"
+    }
+  ],
+  "integrity": {
+    "chain_valid": true,
+    "tamper_detected": false,
+    "events_verified": 5,
+    "final_hash": "4038c9de44d06034853a2127c470179158507570efd13cd1994c3f43be1522ee"
+  },
+  "human_override": {
+    "reviewer_id": "officer-smith",
+    "override_reason": "Long-standing client, collateral verified offline",
+    "final_decision": "APPROVE"
+  },
+  "compliance_met": true,
+  "slo_met": true
+}

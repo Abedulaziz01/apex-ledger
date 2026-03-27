@@ -1,0 +1,8 @@
+Narrative Test Results
+==================================================
+NARR-05: Human Override
+  Status:  PASSED
+  Elapsed: 0.18s (limit: 90s)
+  Events:  5
+  Override verified: True
+  Chain valid: True

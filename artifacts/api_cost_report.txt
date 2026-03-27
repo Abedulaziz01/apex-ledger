@@ -1,0 +1,6 @@
+API Cost Report
+==================================================
+Total LLM API cost this week: $0.00
+Budget limit: $50.00
+Status: UNDER BUDGET
+Note: Event store operations use PostgreSQL only — no LLM calls.
