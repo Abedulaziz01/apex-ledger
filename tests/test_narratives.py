@@ -9,14 +9,14 @@ import asyncio
 import os
 import pytest
 
-from ledger.event_store import EventStore, InMemoryEventStore, OptimisticConcurrencyError
-from ledger.agents.credit_analysis_agent import CreditAnalysisAgent
-from ledger.agents.stub_agents import (
+from src.ledger.core.event_store import EventStore, InMemoryEventStore, OptimisticConcurrencyError
+from src.ledger.agents.credit_analysis_agent import CreditAnalysisAgent
+from src.ledger.agents.stub_agents import (
     DocumentProcessingAgent, FraudDetectionAgent,
     ComplianceAgent, DecisionOrchestratorAgent,
 )
-from ledger.registry.client import ApplicantRegistryClient
-from ledger.schema.events import ApplicationSubmitted, DocumentUploadRequested, DocumentUploaded
+from src.ledger.registry.client import ApplicantRegistryClient
+from src.ledger.schema.events import ApplicationSubmitted, DocumentUploadRequested, DocumentUploaded
 
 
 pytestmark = pytest.mark.skipif(
@@ -321,7 +321,7 @@ async def test_narr05_human_override():
 
     # Human override via command handler
     version = await store.stream_version(f"loan-{app_id}")
-    from ledger.schema.events import HumanReviewCompleted, ApplicationApproved
+    from src.ledger.schema.events import HumanReviewCompleted, ApplicationApproved
     await store.append(f"loan-{app_id}", [
         HumanReviewCompleted(stream_id=f"loan-{app_id}", payload={
             "override": True,

@@ -5,12 +5,15 @@ files = [
     'src/ledger/agents/stub_agents.py',
     'src/ledger/agents/credit_analysis_agent.py',
     'src/ledger/schema/events.py',
+    'tests/test_narratives.py',
 ]
-
 replacements = [
     ('from ledger.agents.base_agent import', 'from src.ledger.agents.base_agent import'),
+    ('from ledger.agents.credit_analysis_agent import', 'from src.ledger.agents.credit_analysis_agent import'),
+    ('from ledger.agents.stub_agents import', 'from src.ledger.agents.stub_agents import'),
     ('from ledger.schema.events import', 'from src.ledger.schema.events import'),
     ('from ledger.event_store import', 'from src.ledger.core.event_store import'),
+    ('from ledger.registry.client import', 'from src.ledger.registry.client import'),
     ('from ledger.domain.aggregates.loan_application import', 'from src.ledger.domain.loan_application import'),
     ('from ledger.', 'from src.ledger.'),
     ('import ledger.', 'import src.ledger.'),
