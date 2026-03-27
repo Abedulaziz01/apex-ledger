@@ -1,5 +1,7 @@
 import json
+import os
 import asyncpg
+from datetime import datetime, timezone
 from typing import Optional
 from src.ledger.core.models import BaseEvent, StoredEvent, StreamMetadata
 from src.ledger.core.exceptions import OptimisticConcurrencyError
@@ -9,6 +11,11 @@ from src.ledger.upcasting.registry import registry as upcaster_registry
 class EventStore:
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
+
+    @classmethod
+    async def create(cls) -> "EventStore":
+        pool = await asyncpg.create_pool(os.environ["DATABASE_URL"], min_size=2, max_size=10)
+        return cls(pool)
 
     async def append(
         self,
@@ -178,3 +185,89 @@ class EventStore:
 
 # Alias for agent compatibility
 AbstractEventStore = EventStore
+
+
+class InMemoryEventStore:
+    """
+    Lightweight in-memory store kept for backwards-compatible tests.
+    Uses zero-based stream positions and returns written StoredEvent objects.
+    """
+
+    def __init__(self):
+        self._streams: dict[str, list[StoredEvent]] = {}
+        self._global_events: list[StoredEvent] = []
+        self._next_id = 1
+
+    async def append(
+        self,
+        stream_id: str,
+        events: list[BaseEvent],
+        expected_version: int,
+    ) -> list[StoredEvent]:
+        current = await self.stream_version(stream_id)
+        if current != expected_version:
+            raise OptimisticConcurrencyError(stream_id, expected_version, current)
+
+        if not events:
+            return []
+
+        stream = self._streams.setdefault(stream_id, [])
+        written: list[StoredEvent] = []
+
+        for event in events:
+            position = len(stream)
+            stored = StoredEvent(
+                id=self._next_id,
+                stream_id=stream_id,
+                version=position,
+                event_type=event.event_type,
+                event_data=event.event_data,
+                metadata=event.metadata,
+                created_at=datetime.now(timezone.utc),
+            )
+            self._next_id += 1
+            stream.append(stored)
+            self._global_events.append(stored)
+            written.append(stored)
+
+        return written
+
+    async def load_stream(
+        self,
+        stream_id: str,
+        from_version: int = -1,
+    ) -> list[StoredEvent]:
+        stream = self._streams.get(stream_id, [])
+        return [event for event in stream if event.version > from_version]
+
+    async def load_all(
+        self,
+        after_position: int = -1,
+        after_event_id: Optional[int] = None,
+        limit: int = 1000,
+    ) -> list[StoredEvent]:
+        cutoff = after_event_id if after_event_id is not None else after_position
+        return [event for event in self._global_events if event.id > cutoff][:limit]
+
+    async def stream_version(self, stream_id: str) -> int:
+        stream = self._streams.get(stream_id)
+        if not stream:
+            return -1
+        return stream[-1].version
+
+    async def archive_stream(self, stream_id: str) -> None:
+        return None
+
+    async def get_stream_metadata(self, stream_id: str) -> Optional[StreamMetadata]:
+        stream = self._streams.get(stream_id)
+        if not stream:
+            return None
+
+        created_at = stream[0].created_at
+        updated_at = stream[-1].created_at
+        return StreamMetadata(
+            stream_id=stream_id,
+            current_version=stream[-1].version,
+            created_at=created_at,
+            updated_at=updated_at,
+        )

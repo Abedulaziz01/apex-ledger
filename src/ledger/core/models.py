@@ -24,6 +24,14 @@ class StoredEvent:
     metadata: dict[str, Any]
     created_at: datetime
 
+    @property
+    def payload(self) -> dict[str, Any]:
+        return self.event_data
+
+    @property
+    def stream_position(self) -> int:
+        return self.version
+
 
 @dataclass
 class StreamMetadata:
