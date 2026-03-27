@@ -1,6 +1,6 @@
 Optimistic Concurrency Control — Collision Report
 ==================================================
-Run: 2026-03-27T14:14:27.806094
+Run: 2026-03-27T19:32:36.382527
 Test: two agents append to same stream at expected_version=3
 Result: exactly 1 winner, 1 OptimisticConcurrencyError raised
 Duplicate events written: 0
