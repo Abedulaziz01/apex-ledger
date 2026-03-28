@@ -11,7 +11,7 @@ import os
 import time
 import uuid
 from typing import Any, Optional
-
+from openai import AsyncOpenAI
 import anthropic
 
 from src.ledger.core.event_store import AbstractEventStore, OptimisticConcurrencyError
@@ -32,12 +32,17 @@ class BaseApexAgent:
         self,
         event_store: AbstractEventStore,
         registry_client=None,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "llama-3.1-8b-instant",
     ):
         self._store = event_store
         self._registry = registry_client
         self._model = model
-        self._client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        
+        api_key = os.environ.get("GROQ_API_KEY")
+        self._client = AsyncOpenAI(
+            api_key=api_key,
+            base_url="https://api.groq.com/openai/v1",
+        )
 
         # Session state (populated in _start_session)
         self._session_id: Optional[str] = None
@@ -187,25 +192,26 @@ class BaseApexAgent:
     ) -> tuple[str, int, int, float]:
         """
         Returns (text, tokens_in, tokens_out, cost_usd).
-        Cost estimate: $3/M input + $15/M output (claude-sonnet pricing).
+        Cost estimate for Groq: $0.10/M input + $0.10/M output.
         """
-        t0 = time.time()
-        response = await self._client.messages.create(
+        response = await self._client.chat.completions.create(
             model=self._model,
             max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": user}],
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
         )
-        tok_in = response.usage.input_tokens
-        tok_out = response.usage.output_tokens
-        cost = (tok_in / 1_000_000 * 3.0) + (tok_out / 1_000_000 * 15.0)
+        tok_in = response.usage.prompt_tokens
+        tok_out = response.usage.completion_tokens
+        cost = (tok_in / 1_000_000 * 0.1) + (tok_out / 1_000_000 * 0.1)
 
         self._total_llm_calls += 1
         self._total_tokens_in += tok_in
         self._total_tokens_out += tok_out
         self._total_cost_usd += cost
 
-        text = response.content[0].text if response.content else ""
+        text = response.choices[0].message.content if response.choices else ""
         return text, tok_in, tok_out, cost
 
     # ------------------------------------------------------------------

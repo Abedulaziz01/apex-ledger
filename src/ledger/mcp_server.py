@@ -54,6 +54,26 @@ def _generic_error(error_type: str, detail: str) -> dict:
     }
 
 
+async def _append_with_deadlock_retry(store: EventStore, stream_id: str, events: list, expected_version: int, retries: int = 3):
+    """Retry append on transient DB deadlocks."""
+    for attempt in range(retries):
+        try:
+            return await store.append(stream_id=stream_id, events=events, expected_version=expected_version)
+        except asyncpg.exceptions.DeadlockDetectedError:
+            if attempt == retries - 1:
+                raise
+            await asyncio.sleep(0.05 * (2 ** attempt))
+
+def _final_version(append_result) -> int:
+    """Normalize EventStore.append return shape (list[StoredEvent] or int)."""
+    if isinstance(append_result, list):
+        if not append_result:
+            return 0
+        last = append_result[-1]
+        return getattr(last, "stream_position", getattr(last, "version", 0))
+    return int(append_result)
+
+
 @mcp.tool()
 async def submit_application(
     application_id: str,
@@ -66,7 +86,7 @@ async def submit_application(
     """Start a new loan application."""
     store = await _get_store()
     try:
-        version = await store.append(
+        written = await store.append(
             stream_id=f"loan-{application_id}",
             events=[BaseEvent(
                 event_type="ApplicationSubmitted",
@@ -81,6 +101,7 @@ async def submit_application(
             )],
             expected_version=0,
         )
+        version = _final_version(written)
         return {"ok": True, "stream_id": f"loan-{application_id}", "version": version}
     except OptimisticConcurrencyError as e:
         return _concurrency_error(str(e))
@@ -104,7 +125,7 @@ async def record_credit_analysis(
     """Save what the credit agent found."""
     store = await _get_store()
     try:
-        version = await store.append(
+        written = await store.append(
             stream_id=f"loan-{application_id}",
             events=[BaseEvent(
                 event_type="CreditAnalysisCompleted",
@@ -122,6 +143,7 @@ async def record_credit_analysis(
             )],
             expected_version=expected_version,
         )
+        version = _final_version(written)
         return {"ok": True, "version": version}
     except OptimisticConcurrencyError as e:
         return _concurrency_error(str(e))
@@ -142,7 +164,7 @@ async def record_fraud_screening(
     """Save what the fraud agent found."""
     store = await _get_store()
     try:
-        version = await store.append(
+        written = await store.append(
             stream_id=f"loan-{application_id}",
             events=[BaseEvent(
                 event_type="FraudScreeningCompleted",
@@ -157,6 +179,7 @@ async def record_fraud_screening(
             )],
             expected_version=expected_version,
         )
+        version = _final_version(written)
         return {"ok": True, "version": version}
     except OptimisticConcurrencyError as e:
         return _concurrency_error(str(e))
@@ -190,11 +213,13 @@ async def record_compliance_check(
         event_data["failure_reason"]       = failure_reason
         event_data["remediation_required"] = True
     try:
-        version = await store.append(
+        written = await _append_with_deadlock_retry(
+            store=store,
             stream_id=f"compliance-{application_id}",
             events=[BaseEvent(event_type=event_type, event_data=event_data)],
             expected_version=expected_version,
         )
+        version = _final_version(written)
         return {"ok": True, "version": version, "result": "passed" if passed else "failed"}
     except OptimisticConcurrencyError as e:
         return _concurrency_error(str(e))
@@ -218,7 +243,7 @@ async def generate_decision(
         recommendation = "REFER"
     store = await _get_store()
     try:
-        version = await store.append(
+        written = await store.append(
             stream_id=f"loan-{application_id}",
             events=[BaseEvent(
                 event_type="DecisionGenerated",
@@ -234,6 +259,7 @@ async def generate_decision(
             )],
             expected_version=expected_version,
         )
+        version = _final_version(written)
         return {"ok": True, "version": version, "recommendation": recommendation}
     except OptimisticConcurrencyError as e:
         return _concurrency_error(str(e))
@@ -253,7 +279,7 @@ async def record_human_review(
     """Save what the loan officer decided."""
     store = await _get_store()
     try:
-        version = await store.append(
+        written = await store.append(
             stream_id=f"loan-{application_id}",
             events=[BaseEvent(
                 event_type="HumanReviewCompleted",
@@ -267,6 +293,7 @@ async def record_human_review(
             )],
             expected_version=expected_version,
         )
+        version = _final_version(written)
         return {"ok": True, "version": version}
     except OptimisticConcurrencyError as e:
         return _concurrency_error(str(e))
@@ -286,7 +313,7 @@ async def start_agent_session(
     """Open a new agent work session."""
     store = await _get_store()
     try:
-        version = await store.append(
+        written = await store.append(
             stream_id=f"agent-{agent_id}-{session_id}",
             events=[BaseEvent(
                 event_type="AgentContextLoaded",
@@ -301,6 +328,7 @@ async def start_agent_session(
             )],
             expected_version=0,
         )
+        version = _final_version(written)
         return {"ok": True, "stream_id": f"agent-{agent_id}-{session_id}", "version": version}
     except OptimisticConcurrencyError as e:
         return _concurrency_error(str(e))

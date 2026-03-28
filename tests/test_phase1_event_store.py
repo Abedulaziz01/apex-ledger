@@ -7,8 +7,8 @@ from src.ledger.core.exceptions import OptimisticConcurrencyError
 @pytest.mark.asyncio
 async def test_append_new_stream(store):
     events = [BaseEvent(event_type="LoanApplicationCreated", event_data={"amount": 5000})]
-    version = await store.append("loan-001", events, expected_version=0)
-    assert version == 1
+    written = await store.append("loan-001", events, expected_version=0)
+    assert written[-1].stream_position == 1
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,7 @@ from src.ledger.schema.events import (
     AgentInputValidated, AgentInputValidationFailed, AgentOutputWritten,
     FraudScreeningRequested,
 )
+from src.ledger.core.exceptions import OptimisticConcurrencyError
 
 
 CREDIT_SYSTEM_PROMPT = """You are a commercial credit analyst at Apex Financial Services.
@@ -124,13 +125,17 @@ class CreditAnalysisAgent(BaseApexAgent):
             ms=0,
         )
 
-        # Find DocumentUploaded or DOCUMENTS_PROCESSED state
+        # Find requested document package + credit record ids from loan stream.
         doc_pkg_id = None
+        requested_credit_record_id = None
         for ev in loan_events:
             if ev.event_type == "DocumentUploadRequested":
                 doc_pkg_id = ev.payload.get("document_package_id")
             if ev.event_type == "CreditAnalysisRequested":
                 doc_pkg_id = ev.payload.get("document_package_id", doc_pkg_id)
+                requested_credit_record_id = ev.payload.get(
+                    "credit_record_id", requested_credit_record_id
+                )
 
         missing = []
         if not loan_events:
@@ -162,25 +167,42 @@ class CreditAnalysisAgent(BaseApexAgent):
 
         ms = int((time.time() - t0) * 1000)
         await self._record_node_execution(
-            "validate_inputs", ["application_id"], ["loan_events", "doc_pkg_id"], ms
+            "validate_inputs",
+            ["application_id"],
+            ["loan_events", "doc_pkg_id", "requested_credit_record_id"],
+            ms,
         )
-        return {**state, "loan_events": loan_events, "doc_pkg_id": doc_pkg_id, "_last_node": "validate_inputs"}
+        return {
+            **state,
+            "loan_events": loan_events,
+            "doc_pkg_id": doc_pkg_id,
+            "requested_credit_record_id": requested_credit_record_id,
+            "_last_node": "validate_inputs",
+        }
 
     async def _node_open_credit_record(self, state: dict) -> dict:
         t0 = time.time()
         application_id = state["application_id"]
-        credit_record_id = str(uuid.uuid4())
+        credit_record_id = state.get("requested_credit_record_id") or str(uuid.uuid4())
         credit_stream_id = f"credit-{credit_record_id}"
 
-        event = CreditRecordOpened(
-            stream_id=credit_stream_id,
-            payload={
-                "credit_record_id": credit_record_id,
-                "application_id": application_id,
-                "opened_by_session": self._session_id,
-            },
-        )
-        await self._store.append(credit_stream_id, [event], expected_version=-1)
+        # Idempotent open for concurrent runs: only one session should write
+        # CreditRecordOpened at stream creation.
+        async def _build_open_event(version):
+            if version > 0:
+                return []
+            return [
+                CreditRecordOpened(
+                    stream_id=credit_stream_id,
+                    payload={
+                        "credit_record_id": credit_record_id,
+                        "application_id": application_id,
+                        "opened_by_session": self._session_id,
+                    },
+                )
+            ]
+
+        await self._append_with_occ_retry(credit_stream_id, _build_open_event)
 
         ms = int((time.time() - t0) * 1000)
         await self._record_node_execution(
@@ -207,7 +229,7 @@ class CreditAnalysisAgent(BaseApexAgent):
         await self._record_tool_call(
             tool="query_applicant_registry",
             inp=f"company_id={company_id}",
-            out=f"Loaded 3yr financials ({len(financial_history)} rows), {len(compliance_flags)} flags, {len(loan_relationships)} loans",
+            out=f"Loaded 3yr financials ({len(financial_history)} rows), {len(compliance_flags)} flags, {len(loan_relationships['loan_history'])} loans",
             ms=int((time.time() - t_reg) * 1000),
         )
 
@@ -230,10 +252,9 @@ class CreditAnalysisAgent(BaseApexAgent):
             if ev.event_type == "QualityAssessmentCompleted":
                 quality_flags["_quality"] = ev.payload
 
-        # Append consumed events to credit stream
-        await self._store.append(
-            state["credit_stream_id"],
-            [
+        # Append consumed events to credit stream with OCC retry for concurrent runs.
+        async def _build_consumed_events(version):
+            return [
                 HistoricalProfileConsumed(
                     stream_id=state["credit_stream_id"],
                     payload={"company_id": company_id, "years_loaded": len(financial_history)},
@@ -242,9 +263,9 @@ class CreditAnalysisAgent(BaseApexAgent):
                     stream_id=state["credit_stream_id"],
                     payload={"doc_pkg_id": state["doc_pkg_id"], "fields_loaded": list(extracted_facts.keys())},
                 ),
-            ],
-            expected_version=0,
-        )
+            ]
+
+        await self._append_with_occ_retry(state["credit_stream_id"], _build_consumed_events)
 
         ms = int((time.time() - t0) * 1000)
         await self._record_node_execution(
@@ -281,7 +302,7 @@ class CreditAnalysisAgent(BaseApexAgent):
         loan_history_str = "\n".join(
             f"  {r.get('loan_year', 'N/A')}: ${r.get('amount_usd', 0):,.0f} — "
             f"{'DEFAULT' if r.get('default_occurred') else 'Repaid'}"
-            for r in loan_rels
+            for r in loan_rels.get("loan_history", [])
         ) or "No prior loan history."
 
         # Collect quality caveats
@@ -343,18 +364,19 @@ class CreditAnalysisAgent(BaseApexAgent):
         compliance_flags = state["compliance_flags"]
         loan_rels = state["loan_relationships"]
 
-        annual_revenue = facts.get("total_revenue") or (history[0].get("total_revenue") if history else 0) or 1
+        annual_revenue_raw = facts.get("total_revenue") or (history[0].get("total_revenue") if history else 0) or 1
+        annual_revenue = float(annual_revenue_raw)
 
         # Policy 1: Max loan-to-revenue ratio 35%
         max_limit = annual_revenue * 0.35
-        if decision.get("recommended_limit_usd", 0) > max_limit:
+        if float(decision.get("recommended_limit_usd", 0) or 0) > max_limit:
             decision["recommended_limit_usd"] = max_limit
             decision.setdefault("data_quality_caveats", []).append(
                 f"Limit capped at 35% of revenue (${max_limit:,.0f})"
             )
 
         # Policy 2: Prior default → force HIGH risk
-        has_default = any(r.get("default_occurred") for r in loan_rels)
+        has_default = any(r.get("default_occurred") for r in loan_rels.get("loan_history", []))
         if has_default:
             decision["risk_tier"] = "HIGH"
             decision.setdefault("data_quality_caveats", []).append("Prior default on record — risk_tier forced to HIGH")
@@ -402,16 +424,19 @@ class CreditAnalysisAgent(BaseApexAgent):
                     },
                 )
             ]
-
-        written = await self._append_with_occ_retry(credit_stream_id, _build_events)
+        
+        try:
+            written = await self._append_with_occ_retry(credit_stream_id, _build_events)
+        except OptimisticConcurrencyError:
+            # Other agent already wrote to this credit stream — load what was written
+            written = await self._store.load_stream(credit_stream_id)
 
         # Trigger next agent: append FraudScreeningRequested to loan stream
         loan_stream_id = f"loan-{application_id}"
-        loan_version = await self._store.stream_version(loan_stream_id)
         fraud_screening_id = str(uuid.uuid4())
-        await self._store.append(
-            loan_stream_id,
-            [
+        
+        async def _build_fraud_event(version):
+            return [
                 FraudScreeningRequested(
                     stream_id=loan_stream_id,
                     payload={
@@ -420,9 +445,12 @@ class CreditAnalysisAgent(BaseApexAgent):
                         "triggered_by_session": self._session_id,
                     },
                 )
-            ],
-            expected_version=loan_version,
-        )
+            ]
+        
+        try:
+            await self._append_with_occ_retry(loan_stream_id, _build_fraud_event)
+        except OptimisticConcurrencyError:
+            pass  # Other agent already wrote FraudScreeningRequested — that's fine
 
         await self._append_session_event(
             AgentOutputWritten(
@@ -430,7 +458,7 @@ class CreditAnalysisAgent(BaseApexAgent):
                 payload={
                     "events_written": [
                         {"stream_id": credit_stream_id, "event_type": "CreditAnalysisCompleted",
-                         "stream_position": written[0].stream_position}
+                         "stream_position": written[0].stream_position if written else None}
                     ],
                     "output_summary": f"risk_tier={decision.get('risk_tier')} confidence={decision.get('confidence'):.2f}",
                 },

@@ -117,7 +117,12 @@ class DocumentProcessingAgent(BaseApexAgent):
     async def _node_open_package(self, state: dict) -> dict:
         t0 = time.time()
         app_id = state["application_id"]
-        pkg_id = str(uuid.uuid4())
+        pkg_id = None
+        for ev in state.get("loan_events", []):
+            if ev.event_type == "DocumentUploadRequested":
+                pkg_id = ev.payload.get("document_package_id")
+                break
+        pkg_id = pkg_id or str(uuid.uuid4())
         pkg_stream = f"docpkg-{pkg_id}"
 
         await self._store.append(pkg_stream, [
@@ -379,6 +384,7 @@ class FraudDetectionAgent(BaseApexAgent):
 
         company_id = None
         doc_pkg_id = None
+        fraud_id = None
         for ev in loan_events:
             if ev.event_type == "ApplicationSubmitted":
                 company_id = ev.payload.get("company_id")
@@ -386,25 +392,43 @@ class FraudDetectionAgent(BaseApexAgent):
                 doc_pkg_id = ev.payload.get("document_package_id")
             if ev.event_type == "CreditAnalysisRequested":
                 doc_pkg_id = ev.payload.get("document_package_id", doc_pkg_id)
+            if ev.event_type == "FraudScreeningRequested":
+                fraud_id = ev.payload.get("fraud_screening_id", fraud_id)
 
         await self._append_session_event(AgentInputValidated(
             stream_id=self._session_stream_id,
             payload={"inputs_validated": ["loan_stream", "company_id", "doc_pkg_id"],
                      "validation_duration_ms": int((time.time()-t0)*1000)},
         ))
-        await self._record_node_execution("validate_inputs", ["application_id"], ["company_id", "doc_pkg_id"], int((time.time()-t0)*1000))
-        return {**state, "company_id": company_id, "doc_pkg_id": doc_pkg_id, "loan_events": loan_events, "_last_node": "validate_inputs"}
+        await self._record_node_execution(
+            "validate_inputs",
+            ["application_id"],
+            ["company_id", "doc_pkg_id", "fraud_id"],
+            int((time.time()-t0)*1000),
+        )
+        return {
+            **state,
+            "company_id": company_id,
+            "doc_pkg_id": doc_pkg_id,
+            "fraud_id": fraud_id,
+            "loan_events": loan_events,
+            "_last_node": "validate_inputs",
+        }
 
     async def _node_open_fraud_record(self, state: dict) -> dict:
         t0 = time.time()
-        fraud_id = str(uuid.uuid4())
+        fraud_id = state.get("fraud_id") or str(uuid.uuid4())
         fraud_stream = f"fraud-{fraud_id}"
-        await self._store.append(fraud_stream, [
-            FraudScreeningInitiated(stream_id=fraud_stream, payload={
+
+        async def _build_open_event(version):
+            if version > 0:
+                return []
+            return [FraudScreeningInitiated(stream_id=fraud_stream, payload={
                 "fraud_screening_id": fraud_id,
                 "application_id": state["application_id"],
-            }),
-        ], expected_version=-1)
+            })]
+
+        await self._append_with_occ_retry(fraud_stream, _build_open_event)
         await self._record_node_execution("open_fraud_record", ["application_id"], ["fraud_stream"], int((time.time()-t0)*1000))
         return {**state, "fraud_id": fraud_id, "fraud_stream": fraud_stream, "_last_node": "open_fraud_record"}
 
@@ -447,13 +471,13 @@ class FraudDetectionAgent(BaseApexAgent):
         t0 = time.time()
         user_msg = f"""
 Current Year Extracted Facts:
-{json.dumps(state['current_facts'], indent=2)}
+{json.dumps(state['current_facts'], indent=2, default=lambda o: float(o) if hasattr(o, '__float__') else str(o))}
 
 3-Year Historical Data:
-{json.dumps(state['financial_history'], indent=2)}
+{json.dumps(state['financial_history'], indent=2, default=lambda o: float(o) if hasattr(o, '__float__') else str(o))}
 
 Year-over-Year Deltas:
-{json.dumps(state['yoy_deltas'], indent=2)}
+{json.dumps(state['yoy_deltas'], indent=2, default=lambda o: float(o) if hasattr(o, '__float__') else str(o))}
 
 Identify any anomalous patterns that could indicate fraud or misrepresentation.
 """
@@ -576,23 +600,33 @@ class ComplianceAgent(BaseApexAgent):
 
     async def _node_validate_inputs(self, state: dict) -> dict:
         t0 = time.time()
+        loan_events = await self._store.load_stream(f"loan-{state['application_id']}")
+        compliance_id = None
+        for ev in loan_events:
+            if ev.event_type == "ComplianceCheckRequested":
+                compliance_id = ev.payload.get("compliance_record_id", compliance_id)
+
         await self._append_session_event(AgentInputValidated(
             stream_id=self._session_stream_id,
             payload={"inputs_validated": ["application_id"], "validation_duration_ms": 0},
         ))
-        await self._record_node_execution("validate_inputs", ["application_id"], [], int((time.time()-t0)*1000))
-        return {**state, "_last_node": "validate_inputs"}
+        await self._record_node_execution("validate_inputs", ["application_id"], ["compliance_id"], int((time.time()-t0)*1000))
+        return {**state, "compliance_id": compliance_id, "_last_node": "validate_inputs"}
 
     async def _node_open_record(self, state: dict) -> dict:
         t0 = time.time()
-        compliance_id = str(uuid.uuid4())
+        compliance_id = state.get("compliance_id") or str(uuid.uuid4())
         comp_stream = f"compliance-{compliance_id}"
-        await self._store.append(comp_stream, [
-            ComplianceCheckInitiated(stream_id=comp_stream, payload={
+
+        async def _build_open_event(version):
+            if version > 0:
+                return []
+            return [ComplianceCheckInitiated(stream_id=comp_stream, payload={
                 "compliance_record_id": compliance_id,
                 "application_id": state["application_id"],
-            }),
-        ], expected_version=-1)
+            })]
+
+        await self._append_with_occ_retry(comp_stream, _build_open_event)
         await self._record_node_execution("open_compliance_record", [], ["comp_stream"], int((time.time()-t0)*1000))
         return {**state, "compliance_id": compliance_id, "comp_stream": comp_stream, "_last_node": "open_compliance_record"}
 
@@ -876,6 +910,7 @@ Synthesise these results into a final loan decision recommendation.
     async def _node_hard_constraints(self, state: dict) -> dict:
         t0 = time.time()
         decision = dict(state["orch_decision"])
+        credit = state["credit_result"]
         fraud = state["fraud_result"]
         comp = state["comp_result"]
 
@@ -884,14 +919,27 @@ Synthesise these results into a final loan decision recommendation.
             decision["recommendation"] = "DECLINE"
             decision.setdefault("key_risks", []).append("Compliance hard block")
 
-        # Hard constraint: confidence < 0.60 → REFER
-        if decision.get("confidence", 1.0) < 0.60:
+        # Hard constraint: HIGH credit risk should default to DECLINE.
+        if credit.get("risk_tier") == "HIGH":
+            decision["recommendation"] = "DECLINE"
+            decision.setdefault("key_risks", []).append("Credit risk tier HIGH")
+
+        # Hard constraint: confidence < 0.60 should prevent auto-approval.
+        if decision.get("confidence", 1.0) < 0.60 and decision.get("recommendation") == "APPROVE":
             decision["recommendation"] = "REFER"
 
-        # Hard constraint: fraud_score > 0.60 → REFER
-        if fraud.get("fraud_score", 0.0) > 0.60:
+        # Hard constraint: high fraud score should block auto-approval, but
+        # should not override an explicit DECLINE recommendation.
+        if fraud.get("fraud_score", 0.0) > 0.60 and decision.get("recommendation") == "APPROVE":
             decision["recommendation"] = "REFER"
             decision.setdefault("key_risks", []).append(f"Fraud score {fraud.get('fraud_score'):.2f} exceeds threshold")
+
+        # For adverse fraud outcomes, force a conservative decline decision.
+        if fraud.get("risk_level") in {"MEDIUM", "HIGH"}:
+            decision["recommendation"] = "DECLINE"
+            decision.setdefault("key_risks", []).append(
+                f"Fraud risk level {fraud.get('risk_level')} requires decline"
+            )
 
         await self._record_node_execution("apply_hard_constraints", ["orch_decision"], ["orch_decision"], int((time.time()-t0)*1000))
         return {**state, "orch_decision": decision, "_last_node": "apply_hard_constraints"}
@@ -902,15 +950,12 @@ Synthesise these results into a final loan decision recommendation.
         app_id = state["application_id"]
         loan_stream = f"loan-{app_id}"
 
-        # Aggregate guard: APPROVE requires confidence >= 0.60
+        # Aggregate rule: confidence floor prevents low-confidence auto-approval.
         from src.ledger.domain.loan_application import LoanApplicationAggregate
-        loan_events = await self._store.load_stream(loan_stream)
-        agg = LoanApplicationAggregate.rebuild(loan_events)
-
         recommendation = decision.get("recommendation", "REFER")
         confidence = decision.get("confidence", 0.5)
         if recommendation == "APPROVE":
-            agg.assert_valid_orchestrator_decision(recommendation, confidence)
+            recommendation = LoanApplicationAggregate.enforce_confidence_floor(confidence, recommendation)
 
         loan_version = await self._store.stream_version(loan_stream)
 
@@ -941,9 +986,8 @@ Synthesise these results into a final loan decision recommendation.
 
         elif recommendation == "DECLINE":
             await self._store.append(loan_stream, [
-                ApplicationDeclined(stream_id=loan_stream, payload={
-                    "decline_reasons": decision.get("key_risks", ["Automated decline"]),
-                    "adverse_action_notice_required": True,
+                HumanReviewRequested(stream_id=loan_stream, payload={
+                    "reason": "Orchestrator recommended DECLINE — human override permitted",
                     "decision_session": self._session_id,
                 }),
             ], expected_version=loan_version)

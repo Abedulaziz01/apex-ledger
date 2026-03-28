@@ -2,10 +2,40 @@ import json
 import os
 import asyncpg
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 from src.ledger.core.models import BaseEvent, StoredEvent, StreamMetadata
 from src.ledger.core.exceptions import OptimisticConcurrencyError
 from src.ledger.upcasting.registry import registry as upcaster_registry
+
+def _to_json(obj) -> str:
+    """JSON serialize with datetime support."""
+    def default(o):
+        if isinstance(o, datetime):
+            return o.isoformat()
+        raise TypeError(f"Not serializable: {type(o)}")
+    return json.dumps(obj, default=default)
+
+def _json_ready(value: Any) -> Any:
+    """Normalize supported event shapes into JSON-safe primitives."""
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return value
+    return value
+
+
+def _event_payload_for_store(event: Any) -> Any:
+    if hasattr(event, "model_dump_for_store"):
+        return event.model_dump_for_store().get("payload", {})
+    if hasattr(event, "payload"):
+        return _json_ready(event.payload)
+    return _json_ready(event.event_data)
+
+
+def _event_metadata_for_store(event: Any) -> Any:
+    if hasattr(event, "model_dump_for_store"):
+        return event.model_dump_for_store().get("metadata", {})
+    return _json_ready(event.metadata)
 
 
 class EventStore:
@@ -20,13 +50,12 @@ class EventStore:
     async def append(
         self,
         stream_id: str,
-        events: list[BaseEvent],
+        events: list,
         expected_version: int,
-    ) -> int:
-        """Append events to a stream. Raises OptimisticConcurrencyError on conflict."""
+    ) -> list:
+        """Append events to a stream. Returns list of stored events with stream_position set."""
         async with self._pool.acquire() as conn:
             async with conn.transaction():
-                # Lock the stream row and get current version
                 row = await conn.fetchrow(
                     """
                     INSERT INTO event_streams (stream_id, current_version)
@@ -39,25 +68,45 @@ class EventStore:
                 )
                 current_version = row["current_version"]
 
-                if current_version != expected_version:
+                effective_expected = 0 if expected_version == -1 else expected_version
+                if current_version != effective_expected:
                     raise OptimisticConcurrencyError(
                         stream_id, expected_version, current_version
                     )
 
                 new_version = current_version
+                stored = []
                 for event in events:
                     new_version += 1
-                    await conn.execute(
+                    payload = event.payload if hasattr(event, 'payload') else event.event_data
+                    meta = event.metadata
+                    if hasattr(meta, 'model_dump'):
+                        meta = meta.model_dump()
+
+                    result = await conn.fetchrow(
                         """
                         INSERT INTO events (stream_id, version, event_type, event_data, metadata)
                         VALUES ($1, $2, $3, $4, $5)
+                        RETURNING id, created_at
                         """,
                         stream_id,
                         new_version,
                         event.event_type,
-                        json.dumps(event.event_data),
-                        json.dumps(event.metadata),
+                        _to_json(payload),
+                        _to_json(meta),
                     )
+                    
+                    # Create StoredEvent object to return
+                    stored_event = StoredEvent(
+                        id=result["id"],
+                        stream_id=stream_id,
+                        version=new_version,
+                        event_type=event.event_type,
+                        event_data=payload,
+                        metadata=meta,
+                        created_at=result["created_at"],
+                    )
+                    stored.append(stored_event)
 
                 await conn.execute(
                     """
@@ -69,7 +118,7 @@ class EventStore:
                     stream_id,
                 )
 
-                return new_version
+                return stored
 
     async def load_stream(
         self,
@@ -183,6 +232,7 @@ class EventStore:
             updated_at=row["updated_at"],
         )
 
+
 # Alias for agent compatibility
 AbstractEventStore = EventStore
 
@@ -221,8 +271,8 @@ class InMemoryEventStore:
                 stream_id=stream_id,
                 version=position,
                 event_type=event.event_type,
-                event_data=event.event_data,
-                metadata=event.metadata,
+                event_data=_event_payload_for_store(event),
+                metadata=_event_metadata_for_store(event),
                 created_at=datetime.now(timezone.utc),
             )
             self._next_id += 1
@@ -246,8 +296,13 @@ class InMemoryEventStore:
         after_event_id: Optional[int] = None,
         limit: int = 1000,
     ) -> list[StoredEvent]:
-        cutoff = after_event_id if after_event_id is not None else after_position
-        return [event for event in self._global_events if event.id > cutoff][:limit]
+        if after_event_id is not None:
+            cutoff_id = after_event_id
+        else:
+            # Backwards-compatible meaning: after_position is zero-based index
+            # in the global stream, so convert to 1-based event ids.
+            cutoff_id = after_position + 1
+        return [event for event in self._global_events if event.id > cutoff_id][:limit]
 
     async def stream_version(self, stream_id: str) -> int:
         stream = self._streams.get(stream_id)

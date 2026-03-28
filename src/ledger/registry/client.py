@@ -121,3 +121,35 @@ class ApplicantRegistryClient:
                 "debt_to_equity":    0.71,
             },
         ]
+
+    async def get_loan_relationships(self, company_id: str) -> dict:
+        """Return loan relationship history for a company."""
+        if self._pool:
+            try:
+                async with self._pool.acquire() as conn:
+                    rows = await conn.fetch(
+                        """
+                        SELECT fiscal_year, total_revenue, ebitda, net_income,
+                               total_assets, total_liabilities, debt_to_equity
+                        FROM applicant_registry.financial_history
+                        WHERE company_id = $1
+                        ORDER BY fiscal_year DESC
+                        """,
+                        company_id,
+                    )
+                    return {
+                        "company_id": company_id,
+                        "loan_history": [],
+                        "financial_years": [dict(r) for r in rows],
+                        "prior_defaults": False,
+                    }
+            except Exception:
+                pass
+        
+        # Stub fallback for when DB is unavailable
+        return {
+            "company_id": company_id,
+            "loan_history": [],
+            "financial_years": [],  # Could also populate from get_financial_history if needed
+            "prior_defaults": False,
+        }

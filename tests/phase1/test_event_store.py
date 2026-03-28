@@ -6,7 +6,7 @@ import asyncio
 import pytest
 
 from src.ledger.core.event_store import InMemoryEventStore, OptimisticConcurrencyError
-from src.ledger.domain.events import ApplicationSubmitted, DocumentUploaded, BaseEvent
+from src.ledger.schema.events import ApplicationSubmitted, DocumentUploaded, BaseEvent
 @pytest.fixture
 def store():
     return InMemoryEventStore()
