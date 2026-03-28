@@ -26,3 +26,5 @@ packages = ["src/apex_ledger"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
+testpaths = ["tests"]
+norecursedirs = ["artifacts", ".git", ".venv", ".pytest_cache", "__pycache__", "scripts"]

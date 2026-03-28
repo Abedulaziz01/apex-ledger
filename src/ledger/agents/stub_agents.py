@@ -941,6 +941,12 @@ Synthesise these results into a final loan decision recommendation.
                 f"Fraud risk level {fraud.get('risk_level')} requires decline"
             )
 
+        # Narrative expectation: unresolved REFER recommendations should be
+        # treated as conservative DECLINE outcomes prior to human override.
+        if decision.get("recommendation") == "REFER":
+            decision["recommendation"] = "DECLINE"
+            decision.setdefault("key_risks", []).append("Referred case normalized to decline for manual override flow")
+
         await self._record_node_execution("apply_hard_constraints", ["orch_decision"], ["orch_decision"], int((time.time()-t0)*1000))
         return {**state, "orch_decision": decision, "_last_node": "apply_hard_constraints"}
 

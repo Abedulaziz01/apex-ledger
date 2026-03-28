@@ -393,6 +393,12 @@ class CreditAnalysisAgent(BaseApexAgent):
             )
 
         # Cap EBITDA-missing confidence
+        # Deterministic guard: if extracted facts have no EBITDA, always cap.
+        if facts.get("ebitda") is None:
+            decision["confidence"] = min(decision.get("confidence", 1.0), 0.75)
+            decision.setdefault("data_quality_caveats", []).append("EBITDA missing — confidence capped at 0.75")
+
+        # Secondary guard from quality assessment payload.
         quality = state.get("quality_flags", {}).get("_quality", {})
         if "ebitda" in quality.get("critical_missing_fields", []):
             decision["confidence"] = min(decision.get("confidence", 1.0), 0.75)
