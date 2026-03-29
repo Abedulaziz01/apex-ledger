@@ -6,6 +6,8 @@ from src.ledger.domain.events import (
     CreditAnalysisRequested,
     CreditAnalysisCompleted,
     FraudScreeningCompleted,
+    ComplianceRulePassed,
+    ComplianceRuleFailed,
     DecisionGenerated,
     HumanReviewCompleted,
     ApplicationApproved,
@@ -24,7 +26,9 @@ VALID_TRANSITIONS = {
     None: "Submitted",
     "Submitted": "AwaitingAnalysis",
     "AwaitingAnalysis": "AnalysisComplete",
-    "AnalysisComplete": ["ApprovedPendingHuman", "DeclinedPendingHuman"],
+    "AnalysisComplete": ["ComplianceReview", "PendingDecision", "ApprovedPendingHuman", "DeclinedPendingHuman"],
+    "ComplianceReview": ["PendingDecision", "ApprovedPendingHuman", "DeclinedPendingHuman"],
+    "PendingDecision": ["ApprovedPendingHuman", "DeclinedPendingHuman"],
     "ApprovedPendingHuman": "FinalApproved",
     "DeclinedPendingHuman": "FinalDeclined",
 }
@@ -110,8 +114,20 @@ class LoanApplicationAggregate:
     def _on_fraud_screening_completed(self, event: FraudScreeningCompleted) -> None:
         pass
 
+    def _on_compliance_rule_passed(self, event) -> None:
+        self.compliance_cleared = True
+        if self.status == "AnalysisComplete":
+            self._transition("ComplianceReview")
+
+    def _on_compliance_rule_failed(self, event) -> None:
+        self.compliance_cleared = False
+        if self.status == "AnalysisComplete":
+            self._transition("ComplianceReview")
+
     def _on_decision_generated(self, event: DecisionGenerated) -> None:
         self.contributing_sessions = event.contributing_agent_sessions
+        if self.status in ("AnalysisComplete", "ComplianceReview"):
+            self._transition("PendingDecision")
         if event.recommendation == "APPROVE":
             self._transition("ApprovedPendingHuman")
         elif event.recommendation == "DECLINE":
@@ -136,6 +152,8 @@ class LoanApplicationAggregate:
             "CreditAnalysisRequested": self._on_credit_analysis_requested,
             "CreditAnalysisCompleted": self._on_credit_analysis_completed,
             "FraudScreeningCompleted": self._on_fraud_screening_completed,
+            "ComplianceRulePassed":    self._on_compliance_rule_passed,
+            "ComplianceRuleFailed":    self._on_compliance_rule_failed,
             "DecisionGenerated":       self._on_decision_generated,
             "HumanReviewCompleted":    self._on_human_review_completed,
             "ApplicationApproved":     self._on_application_approved,
@@ -161,7 +179,8 @@ class LoanApplicationAggregate:
 def _reconstruct(stored) -> object:
     from src.ledger.domain.events import (
         ApplicationSubmitted, CreditAnalysisRequested, CreditAnalysisCompleted,
-        FraudScreeningCompleted, DecisionGenerated, HumanReviewCompleted,
+        FraudScreeningCompleted, ComplianceRulePassed, ComplianceRuleFailed,
+        DecisionGenerated, HumanReviewCompleted,
         ApplicationApproved, ApplicationDeclined,
     )
     mapping = {
@@ -169,6 +188,8 @@ def _reconstruct(stored) -> object:
         "CreditAnalysisRequested": CreditAnalysisRequested,
         "CreditAnalysisCompleted": CreditAnalysisCompleted,
         "FraudScreeningCompleted": FraudScreeningCompleted,
+        "ComplianceRulePassed":    ComplianceRulePassed,
+        "ComplianceRuleFailed":    ComplianceRuleFailed,
         "DecisionGenerated":       DecisionGenerated,
         "HumanReviewCompleted":    HumanReviewCompleted,
         "ApplicationApproved":     ApplicationApproved,
