@@ -95,14 +95,14 @@ HumanReviewCompleted (optional) -> loan-{id}
 
 ### Testing Matrix
 
-| Layer | Purpose | Example |
-|---|---|---|
-| Narrative | End-to-end acceptance flow | `tests/test_narratives.py` |
-| Phase 1 | Event store/OCC contracts | `tests/phase1/test_event_store.py` |
-| Phase 2 | Domain invariants/transitions | `tests/test_phase2_domain.py` |
-| Phase 3 | Projection correctness | `tests/test_phase3_projections.py` |
-| Phase 4 | Integrity/upcasting/memory | `tests/test_phase4_*` |
-| MCP | Tool/resource contracts | `tests/test_mcp_tools.py` |
+| Layer     | Purpose                       | Example                            |
+| --------- | ----------------------------- | ---------------------------------- |
+| Narrative | End-to-end acceptance flow    | `tests/test_narratives.py`         |
+| Phase 1   | Event store/OCC contracts     | `tests/phase1/test_event_store.py` |
+| Phase 2   | Domain invariants/transitions | `tests/test_phase2_domain.py`      |
+| Phase 3   | Projection correctness        | `tests/test_phase3_projections.py` |
+| Phase 4   | Integrity/upcasting/memory    | `tests/test_phase4_*`              |
+| MCP       | Tool/resource contracts       | `tests/test_mcp_tools.py`          |
 
 ---
 
@@ -164,7 +164,7 @@ artifacts/              # Generated reports and regulatory bundles
 ### 1) Clone
 
 ```powershell
-git clone <your-repository-url>
+git clone https://github.com/Abedulaziz01/apex-ledger.git
 cd apex-ledger
 ```
 
