@@ -14,15 +14,18 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_stream_id ON events (stream_id);
+CREATE INDEX IF NOT EXISTS idx_events_stream_version ON events (stream_id, version);
 CREATE INDEX IF NOT EXISTS idx_events_created_at ON events (created_at);
 CREATE INDEX IF NOT EXISTS idx_events_event_type ON events (event_type);
+CREATE INDEX IF NOT EXISTS idx_events_id ON events (id);
 
 -- Tracks the current (latest) version of each stream — used for optimistic concurrency
 CREATE TABLE IF NOT EXISTS event_streams (
     stream_id      TEXT        PRIMARY KEY,
     current_version BIGINT     NOT NULL DEFAULT 0,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    archived_at    TIMESTAMPTZ
 );
 
 -- Tracks how far each named projection has read through the events table
@@ -42,6 +45,7 @@ CREATE TABLE IF NOT EXISTS outbox (
                               CHECK (status IN ('pending', 'delivered', 'failed')),
     attempts      INT         NOT NULL DEFAULT 0,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    published_at  TIMESTAMPTZ,
     delivered_at  TIMESTAMPTZ
 );
 
