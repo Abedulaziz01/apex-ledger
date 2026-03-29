@@ -27,7 +27,7 @@ Non-goals:
 4. Agent outputs are constrained by deterministic policy logic.
 5. Test narratives define acceptance behavior for end-to-end correctness.
 
-## 3. High-Level Architecture
+## 3. High-Level Architecturee
 
 Core layers:
 
