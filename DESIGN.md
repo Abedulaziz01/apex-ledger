@@ -197,3 +197,71 @@ Key invariant:
 - `NARR-03`: crash + context reconstruction + no duplicate terminal fraud event
 - `NARR-04`: jurisdictional hard block and adverse action decline
 - `NARR-05`: decline recommendation followed by human override approval
+
+## 7. Testing and Quality Strategy
+
+### 7.1 Layered Test Strategy
+
+- **Narrative tests**: acceptance-level behavioral correctness
+- **Phase tests**: store/domain/projection/integrity contracts
+- **MCP tests**: external tool/resource contract stability
+
+### 7.2 Stability Practices
+
+- isolate deterministic policy logic from non-deterministic model output
+- keep stream-id lineage consistent across workflow boundaries
+- prefer targeted fixes that preserve already passing narratives
+
+### 7.3 Regression Gate
+
+Recommended gate:
+
+1. `uv run pytest tests/test_narratives.py -v`
+2. `uv run pytest --tb=no -q`
+
+## 8. Operational Considerations
+
+### 8.1 Observability
+
+Operational observability is event-native:
+
+- agent session streams for execution traceability
+- projection lag reports for read-model health
+- generated artifacts for evidence packaging
+
+### 8.2 Recovery Model
+
+Crash recovery is based on session stream replay:
+
+- reconstruct completed nodes
+- resume work from last durable checkpoint
+- ensure no duplicate terminal outputs
+
+### 8.3 Environment Sensitivities
+
+Known external dependencies:
+
+- DB connectivity
+- LLM provider availability and credentials
+- shell/path conventions for script execution
+
+## 9. Security and Compliance Posture
+
+- API keys are environment-only; never committed
+- append-only event history preserves decision lineage
+- adverse action and hard-block outcomes are explicit events
+- integrity chain checks support tamper-evidence narratives
+
+## 10. Design Evolution Roadmap
+
+Potential next improvements:
+
+- formal event schema version migration policy per stream family
+- stricter command/event boundary interfaces for agents
+- projection replay tooling with resumable checkpoint controls
+- circuit-breaker behavior for provider outages in narrative mode
+- richer deterministic fallback policy when LLM outputs are malformed
+
+---
+
+This design intentionally prioritizes correctness, auditability, and predictable behavior under concurrency and partial failures.
