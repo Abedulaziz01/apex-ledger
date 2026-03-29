@@ -410,3 +410,7 @@ Pytest config limits collection to `tests/` using:
 ## License
 
 Add your preferred license file (for example `MIT`) in `LICENSE`.
+
+## Contact
+
+- Email: abduvaio@gmail
