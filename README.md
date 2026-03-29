@@ -2,6 +2,20 @@
 
 Enterprise-grade, event-sourced lending infrastructure built for traceability, reliability, and agent-driven decisioning.
 
+![Python](https://img.shields.io/badge/python-3.12%2B-blue)
+![PostgreSQL](https://img.shields.io/badge/postgresql-14%2B-blue)
+![Tests](https://img.shields.io/badge/tests-narratives%20%2B%20phases-green)
+![Status](https://img.shields.io/badge/status-active-success)
+
+## Quick Start
+
+```powershell
+uv venv
+.\.venv\Scripts\Activate.ps1
+uv pip install -e .
+uv run pytest tests/test_narratives.py -v
+```
+
 ---
 
 ## Table of Contents
