@@ -81,6 +81,29 @@ High-level flow:
 
 The system is event-first: state is always derived from events, never mutated in-place.
 
+### Sequence View
+
+```text
+ApplicationSubmitted -> loan-{id}
+DocumentProcessingAgent -> docpkg-{id}
+CreditAnalysisAgent -> credit-{id}
+FraudDetectionAgent -> fraud-{id}
+ComplianceAgent -> compliance-{id}
+DecisionOrchestratorAgent -> loan-{id} DecisionGenerated
+HumanReviewCompleted (optional) -> loan-{id}
+```
+
+### Testing Matrix
+
+| Layer | Purpose | Example |
+|---|---|---|
+| Narrative | End-to-end acceptance flow | `tests/test_narratives.py` |
+| Phase 1 | Event store/OCC contracts | `tests/phase1/test_event_store.py` |
+| Phase 2 | Domain invariants/transitions | `tests/test_phase2_domain.py` |
+| Phase 3 | Projection correctness | `tests/test_phase3_projections.py` |
+| Phase 4 | Integrity/upcasting/memory | `tests/test_phase4_*` |
+| MCP | Tool/resource contracts | `tests/test_mcp_tools.py` |
+
 ---
 
 ## Domain Streams
