@@ -1,4 +1,4 @@
-import asyncpg
+﻿import asyncpg
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
 
@@ -53,7 +53,7 @@ async def recover_agent_context(
 
     last_position = events[-1].version
 
-    # ── keep last 3 verbatim, summarise the rest ─────────────────────────────
+    # â”€â”€ keep last 3 verbatim, summarise the rest â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     verbatim_events = events[-3:]
     summary_events = events[:-3] if len(events) > 3 else []
 
@@ -73,7 +73,7 @@ async def recover_agent_context(
 
     context_text = "\n".join(summary_lines)
 
-    # ── detect unfinished work ────────────────────────────────────────────────
+    # â”€â”€ detect unfinished work â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     started: set = set()
     finished: set = set()
 
@@ -92,8 +92,14 @@ async def recover_agent_context(
 
     pending_work = [k for k in started if k not in finished]
 
-    # ── determine health ──────────────────────────────────────────────────────
-    health = "NEEDS_RECONCILIATION" if pending_work else "OK"
+    decision_like = {"DecisionGenerated", "CreditAnalysisCompleted", "FraudScreeningCompleted"}
+    completion_like = {"ApplicationApproved", "ApplicationDeclined", "HumanReviewCompleted", "AgentSessionCompleted"}
+    last_type = events[-1].event_type
+    has_completion = any(evt.event_type in completion_like for evt in events)
+    decision_without_completion = last_type in decision_like and not has_completion
+
+    # Determine health.
+    health = "NEEDS_RECONCILIATION" if (pending_work or decision_without_completion) else "OK"
 
     return AgentContext(
         context_text=context_text,

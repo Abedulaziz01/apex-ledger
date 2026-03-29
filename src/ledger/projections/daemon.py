@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 CHECKPOINT_NAME = "main_daemon"
 BATCH_SIZE = 100
 POLL_INTERVAL_SECONDS = 1.0
+HANDLER_MAX_RETRIES = 3
 
 
 class ProjectionDaemon:
@@ -30,6 +31,9 @@ class ProjectionDaemon:
             ApplicationSummaryProjection(pool),
             AgentPerformanceProjection(pool),
             ComplianceAuditProjection(pool),
+        ]
+        self._checkpoint_names = [CHECKPOINT_NAME] + [
+            p.__class__.__name__ for p in self._projections
         ]
 
     # ── public API ────────────────────────────────────────────────────────────
@@ -57,25 +61,33 @@ class ProjectionDaemon:
     # ── internals ─────────────────────────────────────────────────────────────
 
     async def _get_checkpoint(self) -> int:
-        """Return last processed event id, 0 if none."""
+        """Return lowest last processed event id across all projection checkpoints."""
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT last_event_id FROM projection_checkpoints WHERE projection_name=$1",
-                CHECKPOINT_NAME,
+            rows = await conn.fetch(
+                """
+                SELECT projection_name, last_event_id
+                FROM projection_checkpoints
+                WHERE projection_name = ANY($1::text[])
+                """,
+                self._checkpoint_names,
             )
-        return row["last_event_id"] if row else 0
+        if not rows:
+            return 0
+        values = [r["last_event_id"] for r in rows]
+        return min(values) if values else 0
 
     async def _save_checkpoint(self, last_event_id: int) -> None:
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO projection_checkpoints (projection_name, last_event_id, updated_at)
-                VALUES ($1, $2, NOW())
-                ON CONFLICT (projection_name) DO UPDATE
-                    SET last_event_id = $2, updated_at = NOW()
-                """,
-                CHECKPOINT_NAME, last_event_id,
-            )
+            for name in self._checkpoint_names:
+                await conn.execute(
+                    """
+                    INSERT INTO projection_checkpoints (projection_name, last_event_id, updated_at)
+                    VALUES ($1, $2, NOW())
+                    ON CONFLICT (projection_name) DO UPDATE
+                        SET last_event_id = $2, updated_at = NOW()
+                    """,
+                    name, last_event_id,
+                )
 
     async def _fetch_batch(self, after_id: int) -> list:
         async with self._pool.acquire() as conn:
@@ -124,12 +136,17 @@ class ProjectionDaemon:
             return  # skip this event, don't crash
 
         for projection in self._projections:
-            try:
-                await projection.handle(event_type, event_data, recorded_at)
-            except Exception as exc:
-                # one bad projection never kills the others or the daemon
-                logger.error(
-                    "Projection %s failed on event id=%d type=%s: %s",
-                    projection.__class__.__name__, row["id"], event_type, exc,
-                    exc_info=True,
-                )
+            for attempt in range(HANDLER_MAX_RETRIES):
+                try:
+                    await projection.handle(event_type, event_data, recorded_at)
+                    break
+                except Exception as exc:
+                    if attempt == HANDLER_MAX_RETRIES - 1:
+                        logger.error(
+                            "Projection %s failed on event id=%d type=%s after %d retries: %s",
+                            projection.__class__.__name__, row["id"], event_type,
+                            HANDLER_MAX_RETRIES, exc,
+                            exc_info=True,
+                        )
+                    else:
+                        await asyncio.sleep(0.01 * (2 ** attempt))
