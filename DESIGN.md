@@ -87,3 +87,44 @@ Benefits:
 - query speed for operational reads
 - isolation from write model
 - measurable lag and recoverable rebuild behavior
+
+## 5. Concurrency and Reliability Strategy
+
+### 5.1 OCC as First-Class Control
+
+All critical appends use expected-version checks to prevent silent overwrite during parallel agent execution.
+
+Design intent:
+
+- one writer wins on stale expectation
+- losing writer gets explicit `OptimisticConcurrencyError`
+- caller decides retry/reload semantics
+
+### 5.2 Idempotent Open-Record Behavior
+
+Agent record-open steps are designed to be safe under duplicate invocations:
+
+- if stream already exists, no duplicate "open" event is required
+- concurrent sessions can converge on same stream id in narrative scenarios
+
+### 5.3 Deadlock Handling
+
+DB deadlocks are treated as transient infrastructure contention, not business failure.
+
+Mitigation pattern:
+
+- bounded retry with short exponential backoff
+- preserve original error when max retries reached
+
+### 5.4 Deterministic Policy Guards
+
+Because LLM output can vary, deterministic post-processing enforces critical risk policies.
+
+Examples:
+
+- confidence floors and caps
+- missing EBITDA confidence cap
+- hard-block compliance behavior
+- conservative recommendation normalization for override workflows
+
+This keeps acceptance tests stable while allowing model-backed reasoning.
