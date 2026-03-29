@@ -1,73 +1,84 @@
+from datetime import datetime
 from typing import Callable, Dict, Tuple
 
 
 class UpcasterRegistry:
     """
     Holds upcasters keyed by (event_type, from_version).
-    upcast() walks the chain v1→v2→v3 automatically.
-    Stored data is never touched — transformation happens at read time only.
+    upcast() walks the chain v1->v2->v3 automatically.
+    Stored data is never mutated; transforms happen on read.
     """
 
     def __init__(self):
-        # key: (event_type, from_version)  value: callable(payload) -> payload
         self._upcasters: Dict[Tuple[str, int], Callable] = {}
 
     def register(self, event_type: str, from_version: int):
-        """Decorator — register an upcaster for event_type from_version → from_version+1."""
         def decorator(fn: Callable) -> Callable:
             self._upcasters[(event_type, from_version)] = fn
             return fn
         return decorator
 
     def upcast(self, event_type: str, version: int, payload: dict) -> Tuple[int, dict]:
-        """
-        Walk the upcaster chain starting at version.
-        Returns (final_version, upcasted_payload).
-        Payload dict is never mutated — always copies.
-        """
         current_version = version
-        current_payload = dict(payload)  # copy — never mutate original
-
+        current_payload = dict(payload)
         while True:
             key = (event_type, current_version)
             upcaster = self._upcasters.get(key)
             if upcaster is None:
                 break
-            current_payload = upcaster(dict(current_payload))  # copy before passing
+            current_payload = upcaster(dict(current_payload))
             current_version += 1
-
         return current_version, current_payload
 
-
-# ── Singleton registry used by the event store ───────────────────────────────
 
 registry = UpcasterRegistry()
 
 
-# ── Upcaster 1: CreditAnalysisCompleted v1 → v2 ──────────────────────────────
-# v1 fields: application_id, agent_id, session_id, risk_tier,
-#             recommended_limit_usd, analysis_duration_ms, input_data_hash
-# v2 adds:   model_version, confidence_score
-# Inference strategy: model_version defaults to "unknown-v1" (pre-dates tracking);
-# confidence_score defaults to 0.75 (conservative mid-tier assumption for
-# historical LOW/MEDIUM risk decisions — documented in DOMAIN_NOTES).
+def _infer_legacy_model_version(payload: dict) -> str:
+    ts_raw = (
+        payload.get("analysis_timestamp")
+        or payload.get("requested_at")
+        or payload.get("submitted_at")
+    )
+    if not ts_raw:
+        return "legacy-unknown"
+    try:
+        ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+    except Exception:
+        return "legacy-unknown"
+    if ts.year <= 2024:
+        return "legacy-llm-v1"
+    if ts.year == 2025:
+        return "legacy-llm-v2"
+    return "legacy-llm-v3"
+
+
+def _infer_regulatory_basis(payload: dict) -> str:
+    rule_version = payload.get("rule_version")
+    regulation_set_version = payload.get("regulation_set_version")
+    if rule_version:
+        return f"RULESET:{rule_version}"
+    if regulation_set_version:
+        return f"REGSET:{regulation_set_version}"
+    return "UNKNOWN_LEGACY_BASIS"
+
 
 @registry.register("CreditAnalysisCompleted", from_version=1)
 def upcast_credit_analysis_v1_to_v2(payload: dict) -> dict:
-    payload.setdefault("model_version", "unknown-v1")
-    payload.setdefault("confidence_score", 0.75)
+    # Legacy events often lacked explicit model/version and confidence.
+    # Confidence remains None when unknown to avoid fabricating certainty.
+    payload.setdefault("model_version", _infer_legacy_model_version(payload))
+    payload.setdefault("confidence_score", None)
+    payload.setdefault("regulatory_basis", _infer_regulatory_basis(payload))
     return payload
 
-
-# ── Upcaster 2: DecisionGenerated v1 → v2 ────────────────────────────────────
-# v1 fields: application_id, orchestrator_agent_id, recommendation,
-#             confidence_score, contributing_agent_sessions,
-#             decision_basis_summary
-# v2 adds:   model_versions{} dict
-# Inference strategy: empty dict — v1 decisions predate per-model tracking;
-# downstream consumers must treat empty model_versions as "legacy decision".
 
 @registry.register("DecisionGenerated", from_version=1)
 def upcast_decision_generated_v1_to_v2(payload: dict) -> dict:
-    payload.setdefault("model_versions", {})
+    sessions = payload.get("contributing_agent_sessions", []) or []
+    if not payload.get("model_versions"):
+        # Legacy reconstruction heuristic from contributing sessions.
+        payload["model_versions"] = {str(session): "legacy-unknown" for session in sessions}
+    payload.setdefault("regulatory_basis", _infer_regulatory_basis(payload))
     return payload
+

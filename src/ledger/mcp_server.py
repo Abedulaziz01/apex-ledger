@@ -12,6 +12,11 @@ from src.ledger.projections.agent_performance import AgentPerformanceProjection
 from src.ledger.projections.compliance_audit import ComplianceAuditProjection
 from src.ledger.integrity.audit_chain import run_integrity_check as _run_integrity_check
 from src.ledger.memory.agent_context import recover_agent_context, write_recovery_event
+from src.ledger.domain.handlers import (
+    handle_submit_application,
+    handle_generate_decision,
+    handle_start_agent_session,
+)
 
 load_dotenv()
 
@@ -90,22 +95,17 @@ async def submit_application(
     """Start a new loan application. Preconditions: application_id must be new and non-empty."""
     store = await _get_store()
     try:
-        written = await store.append(
-            stream_id=f"loan-{application_id}",
-            events=[BaseEvent(
-                event_type="ApplicationSubmitted",
-                event_data={
-                    "application_id":       application_id,
-                    "applicant_id":         applicant_id,
-                    "requested_amount_usd": requested_amount_usd,
-                    "loan_purpose":         loan_purpose,
-                    "submission_channel":   submission_channel,
-                    "submitted_at":         submitted_at,
-                },
-            )],
-            expected_version=0,
+        version = await handle_submit_application(
+            store,
+            {
+                "application_id": application_id,
+                "applicant_id": applicant_id,
+                "requested_amount_usd": requested_amount_usd,
+                "loan_purpose": loan_purpose,
+                "submission_channel": submission_channel,
+                "submitted_at": submitted_at,
+            },
         )
-        version = _final_version(written)
         return {"ok": True, "stream_id": f"loan-{application_id}", "version": version}
     except OptimisticConcurrencyError as e:
         return _concurrency_error(str(e))
@@ -247,23 +247,20 @@ async def generate_decision(
         recommendation = "REFER"
     store = await _get_store()
     try:
-        written = await store.append(
-            stream_id=f"loan-{application_id}",
-            events=[BaseEvent(
-                event_type="DecisionGenerated",
-                event_data={
-                    "application_id":             application_id,
-                    "orchestrator_agent_id":       orchestrator_agent_id,
-                    "recommendation":              recommendation,
-                    "confidence_score":            confidence_score,
-                    "contributing_agent_sessions": contributing_agent_sessions,
-                    "decision_basis_summary":      decision_basis_summary,
-                    "model_versions":              model_versions,
-                },
-            )],
-            expected_version=expected_version,
+        version = await handle_generate_decision(
+            store,
+            {
+                "application_id": application_id,
+                "orchestrator_agent_id": orchestrator_agent_id,
+                "recommendation": recommendation,
+                "confidence_score": confidence_score,
+                "contributing_agent_sessions": contributing_agent_sessions,
+                "decision_basis_summary": decision_basis_summary,
+                "model_versions": model_versions,
+                "expected_version": expected_version,
+            },
+            sessions_that_processed=set(contributing_agent_sessions),
         )
-        version = _final_version(written)
         return {"ok": True, "version": version, "recommendation": recommendation}
     except OptimisticConcurrencyError as e:
         return _concurrency_error(str(e))
@@ -317,22 +314,17 @@ async def start_agent_session(
     """Open a new agent work session. Preconditions: session_id should be unique for the agent."""
     store = await _get_store()
     try:
-        written = await store.append(
-            stream_id=f"agent-{agent_id}-{session_id}",
-            events=[BaseEvent(
-                event_type="AgentContextLoaded",
-                event_data={
-                    "agent_id":                   agent_id,
-                    "session_id":                 session_id,
-                    "context_source":             context_source,
-                    "event_replay_from_position": event_replay_from_position,
-                    "context_token_count":        context_token_count,
-                    "model_version":              model_version,
-                },
-            )],
-            expected_version=0,
+        version = await handle_start_agent_session(
+            store,
+            {
+                "agent_id": agent_id,
+                "session_id": session_id,
+                "context_source": context_source,
+                "event_replay_from_position": event_replay_from_position,
+                "context_token_count": context_token_count,
+                "model_version": model_version,
+            },
         )
-        version = _final_version(written)
         return {"ok": True, "stream_id": f"agent-{agent_id}-{session_id}", "version": version}
     except OptimisticConcurrencyError as e:
         return _concurrency_error(str(e))
@@ -359,7 +351,6 @@ async def run_integrity_check(application_id: str) -> dict:
         return _generic_error("IntegrityCheckFailed", str(e))
 
 
-@mcp.tool()
 async def recover_agent_session(
     agent_id: str,
     crashed_session_id: str,
@@ -454,6 +445,7 @@ async def get_application_compliance(application_id: str) -> dict:
 
 @mcp.resource('ledger://applications/{application_id}/audit-trail')
 async def get_audit_trail(application_id: str) -> dict:
+    """Exception resource: reads immutable event stream directly for forensic audit."""
     store = await _get_store()
     events = await store.load_stream(f'loan-{application_id}')
     return {
@@ -469,6 +461,7 @@ async def get_audit_trail(application_id: str) -> dict:
 
 @mcp.resource('ledger://agents/{agent_id}/sessions/{session_id}')
 async def get_agent_session(agent_id: str, session_id: str) -> dict:
+    """Exception resource: reads raw agent session stream for recovery/debug visibility."""
     store = await _get_store()
     events = await store.load_stream(f'agent-{agent_id}-{session_id}')
     return {

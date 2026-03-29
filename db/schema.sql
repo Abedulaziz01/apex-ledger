@@ -5,19 +5,26 @@ CREATE TABLE IF NOT EXISTS events (
     id            BIGSERIAL PRIMARY KEY,
     stream_id     TEXT        NOT NULL,
     version       BIGINT      NOT NULL,
+    stream_position BIGINT GENERATED ALWAYS AS (version) STORED,
+    global_position BIGINT GENERATED ALWAYS AS (id) STORED,
     event_type    TEXT        NOT NULL,
     event_data    JSONB       NOT NULL DEFAULT '{}',
     metadata      JSONB       NOT NULL DEFAULT '{}',
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    recorded_at   TIMESTAMPTZ GENERATED ALWAYS AS (created_at) STORED,
 
-    CONSTRAINT events_stream_version_unique UNIQUE (stream_id, version)
+    CONSTRAINT events_stream_version_unique UNIQUE (stream_id, version),
+    CONSTRAINT events_stream_position_unique UNIQUE (stream_id, stream_position)
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_stream_id ON events (stream_id);
 CREATE INDEX IF NOT EXISTS idx_events_stream_version ON events (stream_id, version);
+CREATE INDEX IF NOT EXISTS idx_events_stream_position ON events (stream_id, stream_position);
 CREATE INDEX IF NOT EXISTS idx_events_created_at ON events (created_at);
+CREATE INDEX IF NOT EXISTS idx_events_recorded_at ON events (recorded_at);
 CREATE INDEX IF NOT EXISTS idx_events_event_type ON events (event_type);
 CREATE INDEX IF NOT EXISTS idx_events_id ON events (id);
+CREATE INDEX IF NOT EXISTS idx_events_global_position ON events (global_position);
 
 -- Tracks the current (latest) version of each stream — used for optimistic concurrency
 CREATE TABLE IF NOT EXISTS event_streams (
@@ -76,6 +83,9 @@ CREATE TABLE IF NOT EXISTS agent_performance_ledger (
     model_version         TEXT NOT NULL,
     total_analyses        INT NOT NULL DEFAULT 0,
     total_fraud_screens   INT NOT NULL DEFAULT 0,
+    total_human_reviews   INT NOT NULL DEFAULT 0,
+    total_overrides       INT NOT NULL DEFAULT 0,
+    override_rate         NUMERIC(6,4),
     avg_confidence_score  NUMERIC(4,3),
     avg_duration_ms       NUMERIC(10,2),
     last_active_at        TIMESTAMPTZ,

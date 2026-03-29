@@ -11,6 +11,7 @@ class AgentPerformanceProjection:
         handler = {
             "CreditAnalysisCompleted": self._on_credit_analysis,
             "FraudScreeningCompleted": self._on_fraud_screening,
+            "HumanReviewCompleted": self._on_human_review,
         }.get(event_type)
         if handler:
             await handler(event_data, recorded_at)
@@ -70,6 +71,34 @@ class AgentPerformanceProjection:
                     last_active_at      = $3
                 """,
                 d["agent_id"], d["screening_model_version"], ts,
+            )
+
+    async def _on_human_review(self, d: dict, ts) -> None:
+        reviewer_id = d.get("reviewer_id")
+        if not reviewer_id:
+            return
+        model_version = "human-review"
+        override = bool(d.get("override", False))
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO agent_performance_ledger
+                    (agent_id, model_version, total_human_reviews, total_overrides, override_rate, last_active_at)
+                VALUES ($1,$2,1,$3,$4,$5)
+                ON CONFLICT (agent_id, model_version) DO UPDATE SET
+                    total_human_reviews = COALESCE(agent_performance_ledger.total_human_reviews, 0) + 1,
+                    total_overrides = COALESCE(agent_performance_ledger.total_overrides, 0) + $3,
+                    override_rate = (
+                        (COALESCE(agent_performance_ledger.total_overrides, 0) + $3)::float
+                        / NULLIF(COALESCE(agent_performance_ledger.total_human_reviews, 0) + 1, 0)
+                    ),
+                    last_active_at = $5
+                """,
+                reviewer_id,
+                model_version,
+                1 if override else 0,
+                1.0 if override else 0.0,
+                ts,
             )
 
     async def get(self, agent_id: str) -> list:

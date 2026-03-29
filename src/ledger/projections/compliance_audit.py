@@ -1,26 +1,18 @@
-import asyncpg
-from datetime import datetime, timezone
-from typing import Optional
 import asyncio
-import asyncpg
 from datetime import datetime, timezone
-from typing import Optional
-import asyncio
+
 import asyncpg
-from datetime import datetime, timezone
-from typing import Optional
 
 
 class ComplianceAuditProjection:
-
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
 
     async def handle(self, event_type: str, event_data: dict, recorded_at) -> None:
         handler = {
             "ComplianceCheckRequested": self._on_check_requested,
-            "ComplianceRulePassed":     self._on_rule_passed,
-            "ComplianceRuleFailed":     self._on_rule_failed,
+            "ComplianceRulePassed": self._on_rule_passed,
+            "ComplianceRuleFailed": self._on_rule_failed,
         }.get(event_type)
         if handler:
             await handler(event_data, recorded_at)
@@ -51,20 +43,38 @@ class ComplianceAuditProjection:
                 WHERE application_id=$1 AND recorded_at <= $2
                 ORDER BY recorded_at ASC
                 """,
-                application_id, timestamp,
+                application_id,
+                timestamp,
             )
         return [dict(r) for r in rows]
 
+    async def get_compliance_at(self, application_id: str, timestamp: datetime) -> list:
+        """Temporal query alias used by rubric language."""
+        return await self.get_state_at(application_id, timestamp)
+
+    async def _write_snapshot_checkpoint(self, name: str, event_id: int) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO projection_checkpoints (projection_name, last_event_id, updated_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (projection_name) DO UPDATE SET last_event_id=$2, updated_at=NOW()
+                """,
+                name,
+                event_id,
+            )
+
     async def rebuild_from_scratch(self, event_store) -> None:
+        # Snapshot strategy:
+        # 1) Build a fresh projection from the immutable event log.
+        # 2) Persist rebuild checkpoint atomically after replay.
         async with self._pool.acquire() as conn:
             await conn.execute("TRUNCATE compliance_audit_view RESTART IDENTITY")
 
         after_id = 0
         batch_size = 200
         while True:
-            events = await event_store.load_all(
-                after_event_id=after_id, limit=batch_size
-            )
+            events = await event_store.load_all(after_event_id=after_id, limit=batch_size)
             if not events:
                 break
             for evt in events:
@@ -77,14 +87,7 @@ class ComplianceAuditProjection:
                 after_id = evt.id
             await asyncio.sleep(0)
 
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO projection_checkpoints (projection_name, last_event_id, updated_at)
-                VALUES ('compliance_rebuild', 0, NOW())
-                ON CONFLICT (projection_name) DO UPDATE SET last_event_id=0, updated_at=NOW()
-                """
-            )
+        await self._write_snapshot_checkpoint("compliance_rebuild_snapshot", after_id)
 
     async def _on_check_requested(self, d: dict, ts) -> None:
         async with self._pool.acquire() as conn:
@@ -97,8 +100,10 @@ class ComplianceAuditProjection:
                     VALUES ($1,$2,'pending','pending',$3,$4)
                     ON CONFLICT DO NOTHING
                     """,
-                    d["application_id"], rule_id,
-                    d["regulation_set_version"], ts,
+                    d["application_id"],
+                    rule_id,
+                    d["regulation_set_version"],
+                    ts,
                 )
 
     async def _on_rule_passed(self, d: dict, ts) -> None:
@@ -113,8 +118,12 @@ class ComplianceAuditProjection:
                      evidence_hash, evaluated_at, recorded_at)
                 VALUES ($1,$2,$3,'passed',$4,$5,$6)
                 """,
-                d["application_id"], d["rule_id"], d["rule_version"],
-                d["evidence_hash"], eval_ts, ts,
+                d["application_id"],
+                d["rule_id"],
+                d["rule_version"],
+                d["evidence_hash"],
+                eval_ts,
+                ts,
             )
 
     async def _on_rule_failed(self, d: dict, ts) -> None:
@@ -126,8 +135,12 @@ class ComplianceAuditProjection:
                      failure_reason, remediation_required, recorded_at)
                 VALUES ($1,$2,$3,'failed',$4,$5,$6)
                 """,
-                d["application_id"], d["rule_id"], d["rule_version"],
-                d["failure_reason"], d["remediation_required"], ts,
+                d["application_id"],
+                d["rule_id"],
+                d["rule_version"],
+                d["failure_reason"],
+                d["remediation_required"],
+                ts,
             )
 
     async def get_for_application(self, application_id: str) -> list:
@@ -140,3 +153,4 @@ class ComplianceAuditProjection:
                 application_id,
             )
         return [dict(r) for r in rows]
+

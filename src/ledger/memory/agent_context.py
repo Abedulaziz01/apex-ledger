@@ -53,9 +53,21 @@ async def recover_agent_context(
 
     last_position = events[-1].version
 
-    # â”€â”€ keep last 3 verbatim, summarise the rest â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    verbatim_events = events[-3:]
-    summary_events = events[:-3] if len(events) > 3 else []
+    # Keep last 3 verbatim and preserve PENDING/ERROR events verbatim as well.
+    tail_verbatim = set(events[-3:])
+    pending_error_verbatim = set()
+    for evt in events:
+        et_upper = str(evt.event_type).upper()
+        payload_text = str(getattr(evt, "event_data", {})).upper()
+        if ("PENDING" in et_upper or "ERROR" in et_upper or "PENDING" in payload_text or "ERROR" in payload_text):
+            pending_error_verbatim.add(evt)
+
+    verbatim_events = sorted(
+        tail_verbatim.union(pending_error_verbatim),
+        key=lambda e: e.version,
+    )
+    verbatim_set = set(verbatim_events)
+    summary_events = [evt for evt in events if evt not in verbatim_set]
 
     summary_lines = []
     if summary_events:
