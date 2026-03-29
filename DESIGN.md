@@ -43,3 +43,47 @@ Event flow (simplified):
 ```text
 loan submit -> doc processing -> credit -> fraud -> compliance -> orchestrator -> human override/finalize
 ```
+
+## 4. Stream and Data Model
+
+### 4.1 Stream Taxonomy
+
+- `loan-{application_id}`: lifecycle decisions and final outcomes
+- `docpkg-{document_package_id}`: extraction and quality assessments
+- `credit-{credit_record_id}`: credit analysis context and outcome
+- `fraud-{fraud_screening_id}`: fraud anomalies and screening verdict
+- `compliance-{compliance_record_id}`: rule-level compliance evaluation
+- `agent-{agent_type}-{session_id}`: telemetry, tool calls, recovery context
+
+### 4.2 Event Shape
+
+Canonical schema events include:
+
+- stable `event_type`
+- `stream_id`
+- `payload` (business data)
+- `metadata` (event id, timestamp, causation/correlation)
+
+The design separates business payload from operational metadata to preserve replay compatibility.
+
+### 4.3 Versioning Semantics
+
+Two event store semantics are supported in tests/runtime:
+
+- DB-backed store with stream versions tracked in `event_streams.current_version`
+- in-memory store for phase-level tests with zero-based stream positions
+
+Compatibility notes:
+
+- tests may assert on `stream_position` directly
+- append return values are normalized where APIs expect version integers
+
+### 4.4 Projection Model
+
+Projections are read-side views that consume append-only events.
+
+Benefits:
+
+- query speed for operational reads
+- isolation from write model
+- measurable lag and recoverable rebuild behavior
