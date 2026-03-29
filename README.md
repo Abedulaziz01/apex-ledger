@@ -248,6 +248,22 @@ uv run pytest tests/test_narratives.py::test_narr05_human_override -v -s
 uv run pytest tests/test_narratives.py -v 2>&1 | tee artifacts\narrative_test_results.txt
 ```
 
+### Pre-Release Checklist
+
+```powershell
+uv run pytest tests/test_narratives.py -v
+uv run pytest --tb=no -q
+uv run python scripts\generate_artifacts.py
+```
+
+Release gate checklist:
+
+- narratives pass (`5/5`)
+- full suite passes
+- artifacts generated without encoding errors
+- no secret values committed
+- README and changelog updated
+
 ---
 
 ## Narrative Validation
@@ -326,6 +342,13 @@ Expected outputs:
 - deterministic policy constraints where LLM variance exists
 - deadlock retry for contested DB append paths
 - event integrity verification support
+
+## Operational Notes
+
+- OCC conflicts are expected in concurrent paths and should be handled, not ignored.
+- DB deadlocks can occur under parallel writes; retry policies are built for this.
+- Generated artifacts are excluded from pytest collection by configuration.
+- Prefer module execution for scripts that import `src...`.
 
 ---
 
