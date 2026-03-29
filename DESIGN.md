@@ -128,3 +128,72 @@ Examples:
 - conservative recommendation normalization for override workflows
 
 This keeps acceptance tests stable while allowing model-backed reasoning.
+
+## 6. Agent Workflow Design
+
+### 6.1 Document Processing Agent
+
+Responsibilities:
+
+- validate document package context
+- emit extraction events for income/balance inputs
+- emit quality assessment output for downstream risk controls
+
+Key invariant:
+
+- downstream agents must consume the same package lineage used in loan request flow.
+
+### 6.2 Credit Analysis Agent
+
+Responsibilities:
+
+- load extracted facts + registry context
+- produce credit decision proposal
+- apply deterministic constraints before output event emission
+
+Key invariant:
+
+- credit decisions written for the requested credit record stream (not ad-hoc stream ids).
+
+### 6.3 Fraud Detection Agent
+
+Responsibilities:
+
+- evaluate extracted facts against historical signals
+- output anomaly indicators and risk-level recommendation
+
+Key invariant:
+
+- completed fraud outcome must exist on requested fraud stream id for orchestration and recovery tests.
+
+### 6.4 Compliance Agent
+
+Responsibilities:
+
+- evaluate ordered rules (`REG-001 ... REG-006`)
+- enforce hard-stop semantics where required
+- emit compliance completion + route to decline or decision
+
+Key invariant:
+
+- rule events append to the requested compliance stream for deterministic audit lookup.
+
+### 6.5 Decision Orchestrator Agent
+
+Responsibilities:
+
+- synthesize credit/fraud/compliance outcomes
+- apply hard constraints and confidence gates
+- emit final recommendation and route to human review when needed
+
+Key invariant:
+
+- recommendation policy must support deterministic narrative expectations for decline/override scenarios.
+
+### 6.6 Narrative Mapping
+
+- `NARR-01`: concurrent OCC collision behavior and dual completion expectations
+- `NARR-02`: missing EBITDA quality impacts confidence cap
+- `NARR-03`: crash + context reconstruction + no duplicate terminal fraud event
+- `NARR-04`: jurisdictional hard block and adverse action decline
+- `NARR-05`: decline recommendation followed by human override approval
