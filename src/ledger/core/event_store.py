@@ -2,7 +2,7 @@
 import os
 import asyncpg
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Optional, Iterable
 from src.ledger.core.models import BaseEvent, StoredEvent, StreamMetadata
 from src.ledger.core.exceptions import OptimisticConcurrencyError
 from src.ledger.upcasting.registry import registry as upcaster_registry
@@ -95,6 +95,22 @@ class EventStore:
                         _to_json(payload),
                         _to_json(meta),
                     )
+
+                    await conn.execute(
+                        """
+                        INSERT INTO outbox (event_id, destination, payload, status, attempts, created_at)
+                        VALUES ($1, $2, $3, 'pending', 0, NOW())
+                        """,
+                        result["id"],
+                        "projection-daemon",
+                        _to_json(
+                            {
+                                "stream_id": stream_id,
+                                "version": new_version,
+                                "event_type": event.event_type,
+                            }
+                        ),
+                    )
                     
                     # Create StoredEvent object to return
                     stored_event = StoredEvent(
@@ -123,20 +139,38 @@ class EventStore:
     async def load_stream(
         self,
         stream_id: str,
-        from_version: int = 0,
+        from_version: Optional[int] = None,
+        from_position: Optional[int] = None,
+        to_position: Optional[int] = None,
     ) -> list[StoredEvent]:
-        """Load all events for a stream, optionally from a specific version."""
+        """Load stream events in order with optional position bounds."""
+        lower_bound = from_position if from_position is not None else from_version
+        if lower_bound is None:
+            lower_bound = 0
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT id, stream_id, version, event_type, event_data, metadata, created_at
-                FROM events
-                WHERE stream_id = $1 AND version > $2
-                ORDER BY version ASC
-                """,
-                stream_id,
-                from_version,
-            )
+            if to_position is None:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, stream_id, version, event_type, event_data, metadata, created_at
+                    FROM events
+                    WHERE stream_id = $1 AND version > $2
+                    ORDER BY version ASC
+                    """,
+                    stream_id,
+                    lower_bound,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, stream_id, version, event_type, event_data, metadata, created_at
+                    FROM events
+                    WHERE stream_id = $1 AND version > $2 AND version <= $3
+                    ORDER BY version ASC
+                    """,
+                    stream_id,
+                    lower_bound,
+                    to_position,
+                )
         result = []
         for r in rows:
             version = r.get("version", 1) if isinstance(r, dict) else 1
@@ -155,40 +189,89 @@ class EventStore:
             ))
         return result
 
+    async def iter_all(
+        self,
+        from_global_position: int = 0,
+        event_types: Optional[Iterable[str]] = None,
+        batch_size: int = 1000,
+    ):
+        """Async generator for replaying global events in bounded batches."""
+        after_id = from_global_position
+        type_filter = list(event_types) if event_types else None
+        while True:
+            async with self._pool.acquire() as conn:
+                if type_filter:
+                    rows = await conn.fetch(
+                        """
+                        SELECT id, stream_id, version, event_type, event_data, metadata, created_at
+                        FROM events
+                        WHERE id > $1 AND event_type = ANY($2)
+                        ORDER BY id ASC
+                        LIMIT $3
+                        """,
+                        after_id,
+                        type_filter,
+                        batch_size,
+                    )
+                else:
+                    rows = await conn.fetch(
+                        """
+                        SELECT id, stream_id, version, event_type, event_data, metadata, created_at
+                        FROM events
+                        WHERE id > $1
+                        ORDER BY id ASC
+                        LIMIT $2
+                        """,
+                        after_id,
+                        batch_size,
+                    )
+
+            if not rows:
+                break
+
+            for r in rows:
+                version = r.get("version", 1) if isinstance(r, dict) else 1
+                raw_data = json.loads(r["event_data"]) if isinstance(r["event_data"], str) else dict(r["event_data"])
+                _, upcasted_data = upcaster_registry.upcast(
+                    r["event_type"], version, raw_data
+                )
+                yield StoredEvent(
+                    id=r["id"],
+                    stream_id=r["stream_id"],
+                    version=r["version"],
+                    event_type=r["event_type"],
+                    event_data=upcasted_data,
+                    metadata=json.loads(r["metadata"]) if isinstance(r["metadata"], str) else dict(r["metadata"]),
+                    created_at=r["created_at"],
+                )
+                after_id = r["id"]
+
     async def load_all(
         self,
         after_event_id: int = 0,
+        after_position: Optional[int] = None,
         limit: int = 1000,
+        from_global_position: Optional[int] = None,
+        event_types: Optional[Iterable[str]] = None,
     ) -> list[StoredEvent]:
-        """Global event log - used by projections."""
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT id, stream_id, version, event_type, event_data, metadata, created_at
-                FROM events
-                WHERE id > $1
-                ORDER BY id ASC
-                LIMIT $2
-                """,
-                after_event_id,
-                limit,
-            )
+        """
+        Backwards-compatible list loader over the global event stream.
+        Prefer `iter_all(...)` for large replay workloads.
+        """
+        if from_global_position is not None:
+            after_event_id = from_global_position
+        elif after_position is not None:
+            after_event_id = after_position + 1
+
         result = []
-        for r in rows:
-            version = r.get("version", 1) if isinstance(r, dict) else 1
-            raw_data = json.loads(r["event_data"]) if isinstance(r["event_data"], str) else dict(r["event_data"])
-            final_version, upcasted_data = upcaster_registry.upcast(
-                r["event_type"], version, raw_data
-            )
-            result.append(StoredEvent(
-                id=r["id"],
-                stream_id=r["stream_id"],
-                version=r["version"],
-                event_type=r["event_type"],
-                event_data=upcasted_data,
-                metadata=json.loads(r["metadata"]) if isinstance(r["metadata"], str) else dict(r["metadata"]),
-                created_at=r["created_at"],
-            ))
+        async for event in self.iter_all(
+            from_global_position=after_event_id,
+            event_types=event_types,
+            batch_size=limit,
+        ):
+            result.append(event)
+            if len(result) >= limit:
+                break
         return result
 
     async def stream_version(self, stream_id: str) -> int:
@@ -203,26 +286,46 @@ class EventStore:
     async def archive_stream(self, stream_id: str) -> None:
         """Mark stream as archived in metadata column."""
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE event_streams
-                SET updated_at = NOW()
-                WHERE stream_id = $1
-                """,
-                stream_id,
-            )
+            try:
+                await conn.execute(
+                    """
+                    UPDATE event_streams
+                    SET updated_at = NOW(), archived_at = NOW()
+                    WHERE stream_id = $1
+                    """,
+                    stream_id,
+                )
+            except asyncpg.UndefinedColumnError:
+                await conn.execute(
+                    """
+                    UPDATE event_streams
+                    SET updated_at = NOW()
+                    WHERE stream_id = $1
+                    """,
+                    stream_id,
+                )
 
     async def get_stream_metadata(self, stream_id: str) -> Optional[StreamMetadata]:
         """Return StreamMetadata or None if stream doesn't exist."""
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT stream_id, current_version, created_at, updated_at
-                FROM event_streams
-                WHERE stream_id = $1
-                """,
-                stream_id,
-            )
+            try:
+                row = await conn.fetchrow(
+                    """
+                    SELECT stream_id, current_version, created_at, updated_at, archived_at
+                    FROM event_streams
+                    WHERE stream_id = $1
+                    """,
+                    stream_id,
+                )
+            except asyncpg.UndefinedColumnError:
+                row = await conn.fetchrow(
+                    """
+                    SELECT stream_id, current_version, created_at, updated_at
+                    FROM event_streams
+                    WHERE stream_id = $1
+                    """,
+                    stream_id,
+                )
         if not row:
             return None
         return StreamMetadata(
@@ -230,6 +333,7 @@ class EventStore:
             current_version=row["current_version"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            archived_at=row.get("archived_at") if hasattr(row, "get") else None,
         )
 
 
@@ -246,6 +350,7 @@ class InMemoryEventStore:
     def __init__(self):
         self._streams: dict[str, list[StoredEvent]] = {}
         self._global_events: list[StoredEvent] = []
+        self._archived_at: dict[str, datetime] = {}
         self._next_id = 1
 
     async def append(
@@ -285,24 +390,40 @@ class InMemoryEventStore:
     async def load_stream(
         self,
         stream_id: str,
-        from_version: int = -1,
+        from_version: Optional[int] = None,
+        from_position: Optional[int] = None,
+        to_position: Optional[int] = None,
     ) -> list[StoredEvent]:
+        lower_bound = from_position if from_position is not None else from_version
+        if lower_bound is None:
+            lower_bound = -1
         stream = self._streams.get(stream_id, [])
-        return [event for event in stream if event.version > from_version]
+        events = [event for event in stream if event.version > lower_bound]
+        if to_position is not None:
+            events = [event for event in events if event.version <= to_position]
+        return events
 
     async def load_all(
         self,
         after_position: int = -1,
         after_event_id: Optional[int] = None,
         limit: int = 1000,
+        from_global_position: Optional[int] = None,
+        event_types: Optional[Iterable[str]] = None,
     ) -> list[StoredEvent]:
-        if after_event_id is not None:
+        if from_global_position is not None:
+            cutoff_id = from_global_position
+        elif after_event_id is not None:
             cutoff_id = after_event_id
         else:
             # Backwards-compatible meaning: after_position is zero-based index
             # in the global stream, so convert to 1-based event ids.
             cutoff_id = after_position + 1
-        return [event for event in self._global_events if event.id > cutoff_id][:limit]
+        out = [event for event in self._global_events if event.id > cutoff_id]
+        if event_types:
+            allowed = set(event_types)
+            out = [event for event in out if event.event_type in allowed]
+        return out[:limit]
 
     async def stream_version(self, stream_id: str) -> int:
         stream = self._streams.get(stream_id)
@@ -311,6 +432,7 @@ class InMemoryEventStore:
         return stream[-1].version
 
     async def archive_stream(self, stream_id: str) -> None:
+        self._archived_at[stream_id] = datetime.now(timezone.utc)
         return None
 
     async def get_stream_metadata(self, stream_id: str) -> Optional[StreamMetadata]:
@@ -325,5 +447,6 @@ class InMemoryEventStore:
             current_version=stream[-1].version,
             created_at=created_at,
             updated_at=updated_at,
+            archived_at=self._archived_at.get(stream_id),
         )
 
