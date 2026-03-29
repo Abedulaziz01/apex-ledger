@@ -1,4 +1,4 @@
-import pathlib
+﻿import pathlib
 
 files = [
     'src/ledger/agents/base_agent.py',
@@ -24,7 +24,7 @@ es_content = es_path.read_text(encoding='utf-8')
 if 'AbstractEventStore' not in es_content:
     es_content += '\n\nAbstractEventStore = EventStore\n'
     es_path.write_text(es_content, encoding='utf-8')
-    print('Fixed: event_store.py — added AbstractEventStore')
+    print('Fixed: event_store.py - added AbstractEventStore')
 else:
     print('OK: AbstractEventStore already exists')
 

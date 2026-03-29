@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 import asyncpg
 from datetime import datetime, timezone
@@ -160,7 +160,7 @@ class EventStore:
         after_event_id: int = 0,
         limit: int = 1000,
     ) -> list[StoredEvent]:
-        """Global event log — used by projections."""
+        """Global event log - used by projections."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -326,3 +326,4 @@ class InMemoryEventStore:
             created_at=created_at,
             updated_at=updated_at,
         )
+

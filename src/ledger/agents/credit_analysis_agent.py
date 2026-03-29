@@ -1,6 +1,6 @@
 """
 ledger/agents/credit_analysis_agent.py
-CreditAnalysisAgent — REFERENCE IMPLEMENTATION.
+CreditAnalysisAgent - REFERENCE IMPLEMENTATION.
 Read this before implementing any other agent.
 """
 from __future__ import annotations
@@ -14,10 +14,15 @@ from langgraph.graph import StateGraph, END
 
 from src.ledger.agents.base_agent import BaseApexAgent
 from src.ledger.schema.events import (
-    CreditRecordOpened, HistoricalProfileConsumed, ExtractedFactsConsumed,
-    CreditAnalysisCompleted, CreditAnalysisDeferred,
-    AgentInputValidated, AgentInputValidationFailed, AgentOutputWritten,
+    AgentInputValidated,
+    AgentInputValidationFailed,
+    AgentOutputWritten,
+    CreditAnalysisCompleted,
+    CreditAnalysisDeferred,
+    CreditRecordOpened,
+    ExtractedFactsConsumed,
     FraudScreeningRequested,
+    HistoricalProfileConsumed,
 )
 from src.ledger.core.exceptions import OptimisticConcurrencyError
 
@@ -300,7 +305,7 @@ class CreditAnalysisAgent(BaseApexAgent):
 
         # Build loan history string
         loan_history_str = "\n".join(
-            f"  {r.get('loan_year', 'N/A')}: ${r.get('amount_usd', 0):,.0f} — "
+            f"  {r.get('loan_year', 'N/A')}: ${r.get('amount_usd', 0):,.0f} - "
             f"{'DEFAULT' if r.get('default_occurred') else 'Repaid'}"
             for r in loan_rels.get("loan_history", [])
         ) or "No prior loan history."
@@ -331,7 +336,7 @@ class CreditAnalysisAgent(BaseApexAgent):
             max_tokens=1024,
         )
 
-        # Parse JSON — strip markdown fences if present
+        # Parse JSON - strip markdown fences if present
         clean = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         try:
             decision = json.loads(clean)
@@ -340,7 +345,7 @@ class CreditAnalysisAgent(BaseApexAgent):
                 "risk_tier": "HIGH",
                 "recommended_limit_usd": 0,
                 "confidence": 0.3,
-                "rationale": "LLM returned unparseable response — defaulting to HIGH risk.",
+                "rationale": "LLM returned unparseable response - defaulting to HIGH risk.",
                 "data_quality_caveats": ["LLM parse error"],
             }
 
@@ -375,13 +380,13 @@ class CreditAnalysisAgent(BaseApexAgent):
                 f"Limit capped at 35% of revenue (${max_limit:,.0f})"
             )
 
-        # Policy 2: Prior default → force HIGH risk
+        # Policy 2: Prior default -> force HIGH risk
         has_default = any(r.get("default_occurred") for r in loan_rels.get("loan_history", []))
         if has_default:
             decision["risk_tier"] = "HIGH"
-            decision.setdefault("data_quality_caveats", []).append("Prior default on record — risk_tier forced to HIGH")
+            decision.setdefault("data_quality_caveats", []).append("Prior default on record - risk_tier forced to HIGH")
 
-        # Policy 3: Active HIGH compliance flag → cap confidence at 0.50
+        # Policy 3: Active HIGH compliance flag -> cap confidence at 0.50
         active_high_flags = [
             f for f in compliance_flags
             if f.get("is_active") and f.get("severity") == "HIGH"
@@ -389,20 +394,20 @@ class CreditAnalysisAgent(BaseApexAgent):
         if active_high_flags:
             decision["confidence"] = min(decision.get("confidence", 1.0), 0.50)
             decision.setdefault("data_quality_caveats", []).append(
-                f"Active HIGH compliance flag — confidence capped at 0.50"
+                f"Active HIGH compliance flag - confidence capped at 0.50"
             )
 
         # Cap EBITDA-missing confidence
         # Deterministic guard: if extracted facts have no EBITDA, always cap.
         if facts.get("ebitda") is None:
             decision["confidence"] = min(decision.get("confidence", 1.0), 0.75)
-            decision.setdefault("data_quality_caveats", []).append("EBITDA missing — confidence capped at 0.75")
+            decision.setdefault("data_quality_caveats", []).append("EBITDA missing - confidence capped at 0.75")
 
         # Secondary guard from quality assessment payload.
         quality = state.get("quality_flags", {}).get("_quality", {})
         if "ebitda" in quality.get("critical_missing_fields", []):
             decision["confidence"] = min(decision.get("confidence", 1.0), 0.75)
-            decision.setdefault("data_quality_caveats", []).append("EBITDA missing — confidence capped at 0.75")
+            decision.setdefault("data_quality_caveats", []).append("EBITDA missing - confidence capped at 0.75")
 
         ms = int((time.time() - t0) * 1000)
         await self._record_node_execution(
@@ -434,7 +439,7 @@ class CreditAnalysisAgent(BaseApexAgent):
         try:
             written = await self._append_with_occ_retry(credit_stream_id, _build_events)
         except OptimisticConcurrencyError:
-            # Other agent already wrote to this credit stream — load what was written
+            # Other agent already wrote to this credit stream - load what was written
             written = await self._store.load_stream(credit_stream_id)
 
         # Trigger next agent: append FraudScreeningRequested to loan stream
@@ -456,7 +461,7 @@ class CreditAnalysisAgent(BaseApexAgent):
         try:
             await self._append_with_occ_retry(loan_stream_id, _build_fraud_event)
         except OptimisticConcurrencyError:
-            pass  # Other agent already wrote FraudScreeningRequested — that's fine
+            pass  # Other agent already wrote FraudScreeningRequested - that's fine
 
         await self._append_session_event(
             AgentOutputWritten(
@@ -474,3 +479,5 @@ class CreditAnalysisAgent(BaseApexAgent):
         ms = int((time.time() - t0) * 1000)
         await self._record_node_execution("write_output", ["decision"], [], ms)
         return {**state, "fraud_screening_id": fraud_screening_id, "_last_node": "write_output"}
+
+
