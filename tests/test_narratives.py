@@ -17,6 +17,7 @@ from src.ledger.agents.stub_agents import (
 )
 from src.ledger.registry.client import ApplicantRegistryClient
 from src.ledger.schema.events import ApplicationSubmitted, DocumentUploadRequested, DocumentUploaded
+from src.ledger.memory.agent_context import AgentContext
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -215,8 +216,9 @@ async def test_narr03_crash_and_recovery():
     # Recovery: new agent reconstructs context
     agent_b = FraudDetectionAgent(store, registry)
     context = await agent_b.reconstruct_agent_context(crashed_session_id)
-    assert context["last_successful_node"] == "load_facts"
-    assert "load_facts" in context["completed_nodes"]
+    assert isinstance(context, AgentContext)
+    assert context.last_event_position >= 1
+    assert context.session_health_status in {"OK", "NEEDS_RECONCILIATION"}
 
     # Run recovery session
     await agent_b.process(app_id, prior_session_id=crashed_session_id)

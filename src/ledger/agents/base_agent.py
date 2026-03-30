@@ -15,6 +15,7 @@ from openai import AsyncOpenAI
 import anthropic
 
 from src.ledger.core.event_store import AbstractEventStore, OptimisticConcurrencyError
+from src.ledger.memory.agent_context import AgentContext, recover_agent_context
 from src.ledger.schema.events import (
     AgentSessionStarted, AgentNodeExecuted, AgentToolCalled,
     AgentOutputWritten, AgentSessionCompleted, AgentSessionFailed,
@@ -85,6 +86,23 @@ class BaseApexAgent:
         )
         events = await self._store.append(self._session_stream_id, [event], expected_version=-1)
         self._session_version = events[0].stream_position
+
+        if prior_session_id:
+            ctx = await self.reconstruct_agent_context(prior_session_id)
+            await self._append_session_event(
+                AgentSessionRecovered(
+                    stream_id=self._session_stream_id,
+                    payload={
+                        "session_id": self._session_id,
+                        "crashed_session_id": prior_session_id,
+                        "context_source": f"prior_session_replay:{prior_session_id}",
+                        "last_event_position": ctx.last_event_position,
+                        "pending_work": ctx.pending_work,
+                        "session_health_status": ctx.session_health_status,
+                        "context_summary": ctx.context_text,
+                    },
+                )
+            )
         return self._session_id
 
     async def _end_session(self, next_agent: Optional[str] = None):
@@ -243,26 +261,17 @@ class BaseApexAgent:
     # Crash recovery
     # ------------------------------------------------------------------
 
-    async def reconstruct_agent_context(self, crashed_session_id: str) -> dict:
+    async def reconstruct_agent_context(self, crashed_session_id: str) -> AgentContext:
         """
-        Read the crashed session stream and return the last successful node
-        so the new session can skip completed work.
+        Rebuild a typed AgentContext from a crashed session stream.
+
+        Public API contract:
+        - context_text
+        - last_event_position
+        - pending_work
+        - session_health_status
         """
-        stream_id = f"agent-{self.agent_type}-{crashed_session_id}"
-        events = await self._store.load_stream(stream_id)
-
-        last_node = None
-        completed_nodes = []
-        for ev in events:
-            if ev.event_type == "AgentNodeExecuted":
-                last_node = ev.payload.get("node_name")
-                completed_nodes.append(last_node)
-
-        return {
-            "crashed_session_id": crashed_session_id,
-            "last_successful_node": last_node,
-            "completed_nodes": completed_nodes,
-        }
+        return await recover_agent_context(self._store, self.agent_type, crashed_session_id)
 
     # ------------------------------------------------------------------
     # Simulate crash (for NARR-03 test)
