@@ -34,6 +34,13 @@ class AgentSessionAggregate:
         if application_id in self.decisions:
             raise DomainError(f"Session already produced a decision for application {application_id}")
 
+    def validate_decision_write(self, application_id: str, model_version: str) -> None:
+        # rule 2: context must be loaded before any decision event
+        self.assert_context_loaded()
+        # rule 3: model version cannot drift mid-session
+        self.assert_model_version_current(model_version)
+        self.assert_not_decided_for(application_id)
+
     # ── apply methods ────────────────────────────────────────────────────────
 
     def _on_agent_context_loaded(self, event: AgentContextLoaded) -> None:
@@ -43,9 +50,11 @@ class AgentSessionAggregate:
         self.context_loaded = True
 
     def _on_credit_analysis_completed(self, event: CreditAnalysisCompleted) -> None:
+        self.validate_decision_write(event.application_id, event.model_version)
         self.decisions.append(event.application_id)
 
     def _on_fraud_screening_completed(self, event: FraudScreeningCompleted) -> None:
+        self.validate_decision_write(event.application_id, event.screening_model_version or self.model_version or "")
         self.decisions.append(event.application_id)
 
     # ── dispatcher ───────────────────────────────────────────────────────────

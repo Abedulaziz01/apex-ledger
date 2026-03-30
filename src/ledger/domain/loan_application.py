@@ -65,8 +65,8 @@ class LoanApplicationAggregate:
             raise DomainError(f"Expected AwaitingAnalysis, got '{self.status}'")
 
     def assert_analysis_complete(self) -> None:
-        if self.status != "AnalysisComplete":
-            raise DomainError(f"Expected AnalysisComplete, got '{self.status}'")
+        if self.status not in ("AnalysisComplete", "ComplianceReview"):
+            raise DomainError(f"Expected AnalysisComplete/ComplianceReview, got '{self.status}'")
 
     # rule 3: model version locking
     def assert_no_credit_analysis(self) -> None:
@@ -85,6 +85,8 @@ class LoanApplicationAggregate:
     # rule 4: confidence floor
     @staticmethod
     def enforce_confidence_floor(confidence_score: float, recommendation: str) -> str:
+        if confidence_score < 0 or confidence_score > 1:
+            raise DomainError(f"confidence_score must be in [0,1], got {confidence_score}")
         if confidence_score < 0.6 and recommendation != "REFER":
             return "REFER"
         return recommendation
@@ -96,6 +98,24 @@ class LoanApplicationAggregate:
             raise DomainError(
                 f"Orchestrator references sessions that never processed this application: {invalid}"
             )
+
+    # rule bundle for orchestrator decision generation
+    def validate_decision_inputs(
+        self,
+        recommendation: str,
+        confidence_score: float,
+        contributing_sessions: list,
+        sessions_that_processed: set,
+        model_versions: dict,
+    ) -> str:
+        self.assert_analysis_complete()
+        normalized = self.enforce_confidence_floor(confidence_score, recommendation)
+        self.assert_causal_chain(contributing_sessions, sessions_that_processed)
+        if not isinstance(model_versions, dict) or not model_versions:
+            raise DomainError("DecisionGenerated requires non-empty model_versions")
+        if normalized == "APPROVE":
+            self.assert_compliance_cleared()
+        return normalized
 
     # ── apply methods ─────────────────────────────────────────────────────
 
@@ -125,6 +145,15 @@ class LoanApplicationAggregate:
             self._transition("ComplianceReview")
 
     def _on_decision_generated(self, event: DecisionGenerated) -> None:
+        normalized = self.enforce_confidence_floor(event.confidence_score, event.recommendation)
+        if normalized != event.recommendation:
+            raise DomainError(
+                f"DecisionGenerated violates confidence floor: got {event.recommendation}, expected {normalized}"
+            )
+        if not event.model_versions:
+            raise DomainError("DecisionGenerated missing model_versions")
+        if event.recommendation == "APPROVE" and not self.compliance_cleared:
+            raise DomainError("APPROVE decision requires compliance_cleared=True")
         self.contributing_sessions = event.contributing_agent_sessions
         if self.status in ("AnalysisComplete", "ComplianceReview"):
             self._transition("PendingDecision")

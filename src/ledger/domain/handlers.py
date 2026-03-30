@@ -46,12 +46,13 @@ async def handle_record_credit_analysis(store: Any, command: dict) -> int:
 
 async def handle_generate_decision(store: Any, command: dict, sessions_that_processed: set[str]) -> int:
     agg = await LoanApplicationAggregate.load(store, command["application_id"])
-    agg.assert_analysis_complete()
-    recommendation = LoanApplicationAggregate.enforce_confidence_floor(
-        command["confidence_score"],
-        command["recommendation"],
+    recommendation = agg.validate_decision_inputs(
+        recommendation=command["recommendation"],
+        confidence_score=command["confidence_score"],
+        contributing_sessions=command.get("contributing_agent_sessions", []),
+        sessions_that_processed=sessions_that_processed,
+        model_versions=command.get("model_versions", {}),
     )
-    agg.assert_causal_chain(command.get("contributing_agent_sessions", []), sessions_that_processed)
     payload = dict(command)
     payload["recommendation"] = recommendation
     event = BaseEvent(event_type="DecisionGenerated", event_data=payload)
@@ -87,4 +88,3 @@ async def handle_record_compliance_rule(store: Any, command: dict) -> int:
         expected_version=command["expected_version"],
     )
     return written[-1].stream_position
-

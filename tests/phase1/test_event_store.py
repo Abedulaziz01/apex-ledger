@@ -57,15 +57,15 @@ async def test_occ_wrong_expected_version(store):
 async def test_load_all_returns_all_events(store):
     await store.append("loan-005", [ApplicationSubmitted(stream_id="loan-005", payload={})], expected_version=-1)
     await store.append("loan-006", [ApplicationSubmitted(stream_id="loan-006", payload={})], expected_version=-1)
-    all_events = await store.load_all()
+    all_events = [e async for e in store.load_all()]
     assert len(all_events) >= 2
 
 
 async def test_load_all_after_position(store):
     await store.append("loan-007", [ApplicationSubmitted(stream_id="loan-007", payload={})], expected_version=-1)
     await store.append("loan-008", [ApplicationSubmitted(stream_id="loan-008", payload={})], expected_version=-1)
-    all_events = await store.load_all()
-    later = await store.load_all(after_position=0)
+    all_events = [e async for e in store.load_all()]
+    later = [e async for e in store.load_all(after_position=0)]
     assert len(later) < len(all_events)
 
 

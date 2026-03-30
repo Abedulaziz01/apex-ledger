@@ -48,7 +48,7 @@ async def test_wrong_expected_version_raises(store):
 async def test_load_all_global_log(store):
     await store.append("loan-005", [BaseEvent(event_type="A")], expected_version=0)
     await store.append("loan-006", [BaseEvent(event_type="B")], expected_version=0)
-    all_events = await store.load_all()
+    all_events = [e async for e in store.load_all()]
     assert len(all_events) == 2
 
 

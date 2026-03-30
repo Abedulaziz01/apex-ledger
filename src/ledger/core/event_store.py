@@ -253,26 +253,23 @@ class EventStore:
         limit: int = 1000,
         from_global_position: Optional[int] = None,
         event_types: Optional[Iterable[str]] = None,
-    ) -> list[StoredEvent]:
-        """
-        Backwards-compatible list loader over the global event stream.
-        Prefer `iter_all(...)` for large replay workloads.
-        """
+    ):
+        """Async generator over global events (rubric-aligned load/replay API)."""
         if from_global_position is not None:
             after_event_id = from_global_position
         elif after_position is not None:
             after_event_id = after_position + 1
 
-        result = []
+        yielded = 0
         async for event in self.iter_all(
             from_global_position=after_event_id,
             event_types=event_types,
             batch_size=limit,
         ):
-            result.append(event)
-            if len(result) >= limit:
+            yield event
+            yielded += 1
+            if yielded >= limit:
                 break
-        return result
 
     async def stream_version(self, stream_id: str) -> int:
         """Return current version of a stream, 0 if it doesn't exist."""
@@ -410,7 +407,7 @@ class InMemoryEventStore:
         limit: int = 1000,
         from_global_position: Optional[int] = None,
         event_types: Optional[Iterable[str]] = None,
-    ) -> list[StoredEvent]:
+    ):
         if from_global_position is not None:
             cutoff_id = from_global_position
         elif after_event_id is not None:
@@ -423,7 +420,8 @@ class InMemoryEventStore:
         if event_types:
             allowed = set(event_types)
             out = [event for event in out if event.event_type in allowed]
-        return out[:limit]
+        for event in out[:limit]:
+            yield event
 
     async def stream_version(self, stream_id: str) -> int:
         stream = self._streams.get(stream_id)

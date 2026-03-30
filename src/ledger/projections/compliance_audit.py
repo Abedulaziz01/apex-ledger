@@ -74,10 +74,9 @@ class ComplianceAuditProjection:
         after_id = 0
         batch_size = 200
         while True:
-            events = await event_store.load_all(after_event_id=after_id, limit=batch_size)
-            if not events:
-                break
-            for evt in events:
+            count = 0
+            async for evt in event_store.load_all(after_event_id=after_id, limit=batch_size):
+                count += 1
                 if evt.event_type in (
                     "ComplianceCheckRequested",
                     "ComplianceRulePassed",
@@ -85,6 +84,8 @@ class ComplianceAuditProjection:
                 ):
                     await self.handle(evt.event_type, evt.event_data, evt.created_at)
                 after_id = evt.id
+            if count == 0:
+                break
             await asyncio.sleep(0)
 
         await self._write_snapshot_checkpoint("compliance_rebuild_snapshot", after_id)
@@ -153,4 +154,3 @@ class ComplianceAuditProjection:
                 application_id,
             )
         return [dict(r) for r in rows]
-
