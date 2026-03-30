@@ -53,13 +53,13 @@ def _concurrency_error(detail: str) -> dict:
     }
 
 
-def _generic_error(error_type: str, detail: str) -> dict:
+def _generic_error(error_type: str, detail: str, suggested_action: str = "inspect_detail_and_fix") -> dict:
     return {
         "error_type": error_type,
         "message": "Request failed while handling MCP tool operation.",
         "detail": detail,
         "context": {"reason": detail},
-        "suggested_action": "inspect_detail_and_fix",
+        "suggested_action": suggested_action,
     }
 
 
@@ -92,7 +92,9 @@ async def submit_application(
     submission_channel: str,
     submitted_at: str,
 ) -> dict:
-    """Start a new loan application. Preconditions: application_id must be new and non-empty."""
+    """Start a new loan application.
+    Preconditions: `application_id` must be non-empty and must not already exist.
+    """
     store = await _get_store()
     try:
         version = await handle_submit_application(
@@ -126,7 +128,9 @@ async def record_credit_analysis(
     input_data_hash: str,
     expected_version: int,
 ) -> dict:
-    """Save credit analysis result. Preconditions: loan stream exists and expected_version matches current stream version."""
+    """Save credit analysis result.
+    Preconditions: `loan-{application_id}` stream exists and `expected_version` equals current stream version.
+    """
     store = await _get_store()
     try:
         written = await store.append(
@@ -165,7 +169,9 @@ async def record_fraud_screening(
     input_data_hash: str,
     expected_version: int,
 ) -> dict:
-    """Save fraud screening result. Preconditions: loan stream exists and expected_version matches current stream version."""
+    """Save fraud screening result.
+    Preconditions: `loan-{application_id}` stream exists and `expected_version` equals current stream version.
+    """
     store = await _get_store()
     try:
         written = await store.append(
@@ -202,7 +208,9 @@ async def record_compliance_check(
     failure_reason: str,
     expected_version: int,
 ) -> dict:
-    """Save one compliance rule result. Preconditions: compliance stream version must match expected_version."""
+    """Save one compliance rule result.
+    Preconditions: `compliance-{application_id}` stream exists/initialized and `expected_version` matches current stream version.
+    """
     store = await _get_store()
     event_type = "ComplianceRulePassed" if passed else "ComplianceRuleFailed"
     event_data: dict = {
@@ -242,7 +250,9 @@ async def generate_decision(
     model_versions: dict,
     expected_version: int,
 ) -> dict:
-    """Save orchestrator recommendation. Preconditions: all contributing sessions must be known by caller and expected_version must match."""
+    """Save orchestrator recommendation.
+    Preconditions: contributing sessions are known/valid for this application and `expected_version` matches current stream version.
+    """
     if confidence_score < 0.6 and recommendation != "REFER":
         recommendation = "REFER"
     store = await _get_store()
@@ -277,7 +287,9 @@ async def record_human_review(
     override_reason: str,
     expected_version: int,
 ) -> dict:
-    """Save loan officer decision. Preconditions: a DecisionGenerated event must already exist and expected_version must match."""
+    """Save loan officer decision.
+    Preconditions: `DecisionGenerated` already exists for the application and `expected_version` matches current stream version.
+    """
     store = await _get_store()
     try:
         written = await store.append(
@@ -311,7 +323,9 @@ async def start_agent_session(
     context_token_count: int,
     model_version: str,
 ) -> dict:
-    """Open a new agent work session. Preconditions: session_id should be unique for the agent."""
+    """Open a new agent work session.
+    Preconditions: `session_id` is unique for `agent_id` and model/context fields are provided.
+    """
     store = await _get_store()
     try:
         version = await handle_start_agent_session(
@@ -334,7 +348,9 @@ async def start_agent_session(
 
 @mcp.tool()
 async def run_integrity_check(application_id: str) -> dict:
-    """Run tamper-detection hash chain check. Preconditions: corresponding loan stream may exist; empty streams are handled."""
+    """Run tamper-detection hash chain check.
+    Preconditions: target stream id follows `loan-{application_id}` format; empty/missing stream is handled.
+    """
     pool = await _get_pool()
     try:
         report = await _run_integrity_check(pool, f"loan-{application_id}")
