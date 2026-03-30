@@ -27,10 +27,13 @@ async def test_run_what_if_filters_missing_causation_and_never_writes():
             id=1,
             stream_id="loan-wi-1",
             version=1,
+            stream_position=1,
+            global_position=1,
             event_type="ApplicationSubmitted",
             event_data={"application_id": "wi-1"},
             metadata={"event_id": "evt-1"},
             created_at=now,
+            recorded_at=now,
         )
     ]
     hypothetical = BaseEvent(
@@ -61,10 +64,13 @@ async def test_run_what_if_include_types_allowlist():
             id=1,
             stream_id="loan-wi-2",
             version=1,
+            stream_position=1,
+            global_position=1,
             event_type="ApplicationSubmitted",
             event_data={"application_id": "wi-2"},
             metadata={"event_id": "evt-1"},
             created_at=now,
+            recorded_at=now,
         )
     ]
     hypothetical = BaseEvent(
@@ -84,4 +90,3 @@ async def test_run_what_if_include_types_allowlist():
 
     assert result["included_event_count"] == 1
     assert result["simulated_timeline"][0]["event_type"] == "DecisionGenerated"
-

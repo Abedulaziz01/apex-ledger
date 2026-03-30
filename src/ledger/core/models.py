@@ -28,18 +28,17 @@ class StoredEvent(BaseModel):
     id: int
     stream_id: str
     version: int
+    stream_position: int
+    global_position: int
     event_type: str
     event_data: dict[str, Any]
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    recorded_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
     def payload(self) -> dict[str, Any]:
         return self.event_data
-
-    @property
-    def stream_position(self) -> int:
-        return self.version
 
 
 class StreamMetadata(BaseModel):
@@ -52,4 +51,3 @@ class StreamMetadata(BaseModel):
     created_at: datetime
     updated_at: datetime
     archived_at: datetime | None = None
-

@@ -87,7 +87,7 @@ class EventStore:
                         """
                         INSERT INTO events (stream_id, version, event_type, event_data, metadata)
                         VALUES ($1, $2, $3, $4, $5)
-                        RETURNING id, created_at
+                        RETURNING id, stream_position, global_position, created_at, recorded_at
                         """,
                         stream_id,
                         new_version,
@@ -117,10 +117,13 @@ class EventStore:
                         id=result["id"],
                         stream_id=stream_id,
                         version=new_version,
+                        stream_position=result["stream_position"],
+                        global_position=result["global_position"],
                         event_type=event.event_type,
                         event_data=payload,
                         metadata=meta,
                         created_at=result["created_at"],
+                        recorded_at=result["recorded_at"],
                     )
                     stored.append(stored_event)
 
@@ -151,7 +154,7 @@ class EventStore:
             if to_position is None:
                 rows = await conn.fetch(
                     """
-                    SELECT id, stream_id, version, event_type, event_data, metadata, created_at
+                    SELECT id, stream_id, version, stream_position, global_position, event_type, event_data, metadata, created_at, recorded_at
                     FROM events
                     WHERE stream_id = $1 AND version > $2
                     ORDER BY version ASC
@@ -162,7 +165,7 @@ class EventStore:
             else:
                 rows = await conn.fetch(
                     """
-                    SELECT id, stream_id, version, event_type, event_data, metadata, created_at
+                    SELECT id, stream_id, version, stream_position, global_position, event_type, event_data, metadata, created_at, recorded_at
                     FROM events
                     WHERE stream_id = $1 AND version > $2 AND version <= $3
                     ORDER BY version ASC
@@ -182,10 +185,13 @@ class EventStore:
                 id=r["id"],
                 stream_id=r["stream_id"],
                 version=r["version"],
+                stream_position=r["stream_position"],
+                global_position=r["global_position"],
                 event_type=r["event_type"],
                 event_data=upcasted_data,
                 metadata=json.loads(r["metadata"]) if isinstance(r["metadata"], str) else dict(r["metadata"]),
                 created_at=r["created_at"],
+                recorded_at=r["recorded_at"],
             ))
         return result
 
@@ -203,7 +209,7 @@ class EventStore:
                 if type_filter:
                     rows = await conn.fetch(
                         """
-                        SELECT id, stream_id, version, event_type, event_data, metadata, created_at
+                        SELECT id, stream_id, version, stream_position, global_position, event_type, event_data, metadata, created_at, recorded_at
                         FROM events
                         WHERE id > $1 AND event_type = ANY($2)
                         ORDER BY id ASC
@@ -216,7 +222,7 @@ class EventStore:
                 else:
                     rows = await conn.fetch(
                         """
-                        SELECT id, stream_id, version, event_type, event_data, metadata, created_at
+                        SELECT id, stream_id, version, stream_position, global_position, event_type, event_data, metadata, created_at, recorded_at
                         FROM events
                         WHERE id > $1
                         ORDER BY id ASC
@@ -239,10 +245,13 @@ class EventStore:
                     id=r["id"],
                     stream_id=r["stream_id"],
                     version=r["version"],
+                    stream_position=r["stream_position"],
+                    global_position=r["global_position"],
                     event_type=r["event_type"],
                     event_data=upcasted_data,
                     metadata=json.loads(r["metadata"]) if isinstance(r["metadata"], str) else dict(r["metadata"]),
                     created_at=r["created_at"],
+                    recorded_at=r["recorded_at"],
                 )
                 after_id = r["id"]
 
@@ -368,14 +377,18 @@ class InMemoryEventStore:
 
         for event in events:
             position = len(stream)
+            now = datetime.now(timezone.utc)
             stored = StoredEvent(
                 id=self._next_id,
                 stream_id=stream_id,
                 version=position,
+                stream_position=position,
+                global_position=self._next_id,
                 event_type=event.event_type,
                 event_data=_event_payload_for_store(event),
                 metadata=_event_metadata_for_store(event),
-                created_at=datetime.now(timezone.utc),
+                created_at=now,
+                recorded_at=now,
             )
             self._next_id += 1
             stream.append(stored)
